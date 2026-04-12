@@ -1,0 +1,116 @@
+{
+  "_description": "6-engine Vedic weight system for Vyapar Ratna AI. These weights govern the relative contribution of each Vedic/astrology engine within the total Vedic score portion. Technical analysis is applied separately on top of the Vedic composite.",
+
+  "horizon_weights": {
+    "1D": {
+      "_note": "Intraday/daily: Prasna (horary) and Vyapar Ratna dominate. Slow planets irrelevant.",
+      "vyapar_ratna": 0.35,
+      "prasna":       0.30,
+      "bhavartha":    0.15,
+      "kalamrita":    0.10,
+      "brihat":       0.05,
+      "mundane":      0.05
+    },
+    "1W": {
+      "_note": "Weekly: balanced Vedic emphasis. Prasna still relevant. Slow planets beginning to matter.",
+      "vyapar_ratna": 0.25,
+      "bhavartha":    0.25,
+      "kalamrita":    0.20,
+      "prasna":       0.15,
+      "brihat":       0.10,
+      "mundane":      0.05
+    },
+    "2W": {
+      "_note": "Bi-weekly: Bhavartha and Kalamrita timing most relevant. Prasna fading.",
+      "vyapar_ratna": 0.22,
+      "bhavartha":    0.26,
+      "kalamrita":    0.22,
+      "prasna":       0.10,
+      "brihat":       0.12,
+      "mundane":      0.08
+    },
+    "1M": {
+      "_note": "Monthly: slow-planet transits (Brihat) and Kalamrita Dasa cycles dominate. Prasna irrelevant.",
+      "brihat":       0.28,
+      "kalamrita":    0.25,
+      "bhavartha":    0.20,
+      "mundane":      0.15,
+      "vyapar_ratna": 0.12,
+      "prasna":       0.00
+    },
+    "3M": {
+      "_note": "Quarterly: Brihat Samhita slow transits and Mundane cycles dominate. Prasna = 0.",
+      "brihat":       0.30,
+      "kalamrita":    0.25,
+      "bhavartha":    0.20,
+      "mundane":      0.15,
+      "vyapar_ratna": 0.10,
+      "prasna":       0.00
+    }
+  },
+
+  "category_technical_weight": {
+    "_note": "Fraction of total score assigned to technical analysis. Remainder goes to the 6 Vedic engines blended by horizon_weights.",
+    "gold":      0.20,
+    "silver":    0.25,
+    "agri":      0.23,
+    "commodity": 0.50,
+    "equity":    0.43,
+    "index":     0.50
+  },
+
+  "backtest_accuracy": {
+    "_note": "Jyotish-only backtest results (90 trading days to Jan 2026). Random baseline = 33.3%. Results with 'both' mode (incl. technical) would be higher.",
+    "_methodology": "Correct = signal matches actual price direction within ±0.5% threshold over the horizon period. Data source: yfinance historical closes.",
+    "BANKNIFTY": {"1D": 45.5, "1W": 37.7, "category": "index"},
+    "NIFTY50":   {"1D": 37.7, "1W": 29.9, "category": "index"},
+    "GOLD":      {"1D": 40.5, "1W": 44.3, "category": "gold"},
+    "RELIANCE":  {"1D": 26.9, "1W": 24.4, "category": "equity"},
+    "TCS":       {"1D": 29.5, "1W": 20.5, "category": "equity"},
+    "_observations": [
+      "Commodities and indices outperform equities — consistent with book's focus",
+      "GOLD 1W (44.3%) > GOLD 1D (40.5%) — Vyapar Ratna weekly rules are stronger",
+      "BANKNIFTY 1D best overall at +12pp above random baseline",
+      "Equity stocks underperform — Vyapar Ratna text primarily covers commodities/gold"
+    ]
+  },
+
+  "engine_metadata": {
+    "vyapar_ratna": {
+      "book":    "Vyapar Ratna",
+      "file":    "jyotish_engine.py",
+      "focus":   "Vaar, Tithi, Sankranti rules for Indian commodities",
+      "best_horizon": ["1D", "1W"]
+    },
+    "prasna": {
+      "book":    "Prasna Marga (B.V. Raman)",
+      "file":    "prasna_engine.py",
+      "focus":   "Horary chart for moment of query; Gochara transits",
+      "best_horizon": ["1D", "1W"]
+    },
+    "bhavartha": {
+      "book":    "Bhavartha Ratnakara",
+      "file":    "bhavartha_engine.py",
+      "focus":   "Dhanayoga, Rajayoga, Maraka combinations; Dasa timing",
+      "best_horizon": ["1W", "2W", "1M"]
+    },
+    "kalamrita": {
+      "book":    "Uttara Kalamrita (Kalidasa)",
+      "file":    "kalamrita_engine.py",
+      "focus":   "Karakatvas, Dhana Yoga, Vimshottari Dasa, Prashna",
+      "best_horizon": ["1W", "2W", "1M", "3M"]
+    },
+    "brihat": {
+      "book":    "Brihat Samhita (Varahamihira)",
+      "file":    "brihat_engine.py",
+      "focus":   "Jupiter/Saturn transits through signs; eclipse effects; commodity pricing",
+      "best_horizon": ["1M", "3M"]
+    },
+    "mundane": {
+      "book":    "Mediniya Jyotish",
+      "file":    "mundane_engine.py",
+      "focus":   "Samvatsara, Ritu, Sankranti seasonal cycles; Indian market patterns",
+      "best_horizon": ["1M", "3M"]
+    }
+  }
+}
