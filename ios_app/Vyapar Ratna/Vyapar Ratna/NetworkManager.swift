@@ -1,5 +1,5 @@
 // NetworkManager.swift
-// Vyapar Ratna AI — iOS App
+// VedicAlpha — iOS App
 // Handles all API calls to the FastAPI backend
 
 import Foundation
@@ -10,7 +10,7 @@ import Combine
 // LAN:     http://192.168.x.x:8000  (iPhone on same Wi-Fi as Mac)
 // Cloud:   https://your-app.railway.app
 
-private let kBaseURLKey  = "vyapar_base_url"
+private let kBaseURLKey  = "vedicalpha_base_url"
 let kBaseURLDefault      = "http://localhost:8000"
 
 var BASE_URL: String {
@@ -248,8 +248,23 @@ struct HistoryItem: Codable, Identifiable {
 
 // ── Network Manager ───────────────────────────────────────────────────────────
 
-enum NetworkError: Error {
+enum NetworkError: Error, LocalizedError {
     case badURL(String)
+    case serverError(Int, String)   // HTTP status + detail message from API
+
+    var errorDescription: String? {
+        switch self {
+        case .badURL(let url):
+            return "Invalid server URL: \(url)"
+        case .serverError(let code, let detail):
+            return detail.isEmpty ? "Server error \(code)" : detail
+        }
+    }
+}
+
+/// Decode a FastAPI error response body {"detail": "..."}
+private struct APIError: Decodable {
+    let detail: String
 }
 
 class NetworkManager: ObservableObject {
@@ -277,7 +292,11 @@ class NetworkManager: ObservableObject {
             PredictionRequest(ticker: ticker, exchange: exchange,
                               category: category, horizon: horizon, mode: mode)
         )
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            let detail = (try? decoder.decode(APIError.self, from: data))?.detail ?? ""
+            throw NetworkError.serverError(http.statusCode, detail)
+        }
         return try decoder.decode(PredictionResponse.self, from: data)
     }
 

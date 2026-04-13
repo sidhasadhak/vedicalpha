@@ -1,7 +1,7 @@
 """
-Vyapar Ratna AI — FastAPI Backend
+VedicAlpha — FastAPI Backend
 Indian Stock & Commodity Prediction Engine
-Combines Jyotish (Vedic astrology) rules with live market data.
+Combines 6 Vedic Jyotish engines with live market data and technical analysis.
 """
 
 from fastapi import FastAPI, HTTPException, Query
@@ -19,8 +19,8 @@ from history_store import HistoryStore
 from kalamrita_engine import KalamritaEngine
 
 app = FastAPI(
-    title="Vyapar Ratna AI API",
-    description="Indian market prediction using Jyotish + Technical Analysis",
+    title="VedicAlpha API",
+    description="Indian market prediction — 6 Vedic engines + Technical Analysis",
     version="1.0.0"
 )
 
@@ -88,7 +88,7 @@ class PrashnaRequest(BaseModel):
 @app.get("/")
 def root():
     return {
-        "app": "Vyapar Ratna AI",
+        "app": "VedicAlpha",
         "version": "1.0.0",
         "status": "running",
         "endpoints": ["/predict", "/panchanga", "/quote/{ticker}", "/history", "/search"]
@@ -106,8 +106,34 @@ def predict(req: PredictionRequest):
     # 1. Get Panchanga for target date
     panchanga = jyotish.get_panchanga(target)
 
-    # 2. Fetch live price (best-effort; falls back to mock if API unavailable)
-    price_data = market.get_quote(req.ticker, req.exchange)
+    # 2. Fetch price — returns None for unrecognised tickers (no hallucination)
+    price_data = market.get_quote(req.ticker.upper(), req.exchange.upper())
+    if price_data is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Ticker '{req.ticker.upper()}' not found. "
+                "Use /search to find supported instruments."
+            ),
+        )
+
+    # 2b. For longer horizons, extend the OHLC history.
+    #     1D/1W/2W: 65 daily bars (already in get_quote)
+    #     1M:       200 daily bars — enough for reliable 200-DMA + medium-term RSI
+    #     3M:       420 daily bars — ~1.5 years; aggregated to weekly inside engine
+    # Calendar days, not trading days. Approx 252 trading days per 365 calendar.
+    # 1M needs 200 trading days for 200-DMA → request ~300 calendar days.
+    # 3M needs 420 trading days for weekly aggregation → request ~600 calendar days.
+    _extra_days = {"1M": 300, "3M": 600}
+    if req.horizon in _extra_days:
+        extended = market.get_ohlc_history(
+            req.ticker.upper(), days=_extra_days[req.horizon]
+        )
+        if len(extended.get("closes", [])) > len(price_data.get("closes", [])):
+            price_data["closes"] = extended["closes"]
+            price_data["highs"]  = extended["highs"]
+            price_data["lows"]   = extended["lows"]
+            price_data["opens"]  = extended.get("opens", [])
 
     # 3. Run prediction
     result = predictor.predict(
@@ -142,8 +168,14 @@ def get_panchanga(target_date: Optional[str] = Query(None)):
 
 @app.get("/quote/{ticker}")
 def get_quote(ticker: str, exchange: str = "NSE"):
-    """Live price quote for a stock or commodity."""
-    return market.get_quote(ticker.upper(), exchange.upper())
+    """Live price quote for a registered instrument."""
+    result = market.get_quote(ticker.upper(), exchange.upper())
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Ticker '{ticker.upper()}' not found. Use /search to find supported instruments.",
+        )
+    return result
 
 
 @app.get("/search")
@@ -254,12 +286,16 @@ def prashna(req: PrashnaRequest):
 
 
 @app.post("/backtest")
-def backtest(ticker: str, horizon: str = "1W", days: int = 90):
+def backtest(ticker: str, horizon: str = "1W",
+             days: int = 730, category: str = "equity"):
     """
-    Back-test Jyotish rules against past dates.
-    Returns accuracy summary.
+    Back-test all 6 Vedic engines against historical closing prices.
+    Returns composite accuracy, per-engine breakdown, and last 20 results.
+    Default window: 2 years (730 days).
     """
-    results = predictor.backtest(ticker=ticker, horizon=horizon, days=days)
+    results = predictor.backtest(
+        ticker=ticker, horizon=horizon, days=days, category=category
+    )
     return results
 
 

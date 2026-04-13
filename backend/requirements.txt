@@ -12,5 +12,5 @@ yfinance==0.2.40      # Commodities + global indices — reliable fallback
 # Optional: Angel One SmartAPI
 # smartapi-python==1.3.5
 
-# Astronomical calculations for precise Panchanga
-# ephem==4.1.5        # More accurate moon phase / nakshatra
+# Astronomical calculations — Swiss Ephemeris (Lahiri sidereal, used by all Vedic engines)
+pyswisseph==2.10.3.2   # Covers 3000 BC–3000 AD; no data files needed (Moshier built-in)

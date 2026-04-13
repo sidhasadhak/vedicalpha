@@ -1,0 +1,36 @@
+{
+  "_description": "Per-ticker technical indicator weights for VedicAlpha. 1.0 = standard contribution, 0.0 = disabled, 2.0 = double weight. Updated automatically by: python3 run_backtest.py --update-indicator-weights. Edit manually to override.",
+
+  "_indicators": {
+    "RSI":              "RSI-14 momentum oscillator",
+    "MACD":             "MACD 12/26/9 trend-momentum crossover",
+    "supertrend":       "Supertrend ATR-based trend filter (7-period, 3× mult) — popular on NSE/MCX",
+    "bollinger":        "Bollinger Bands %B + squeeze detection (20-period, 2σ)",
+    "ADX":              "ADX-14 trend strength (direction from Supertrend)",
+    "VIX":              "India VIX — fetched live from NSE via nsepython",
+    "PCR":              "NSE Put-Call Ratio — simulated for index/equity only (0.6 until live feed restored)",
+    "gold_silver_ratio":"Gold:Silver ratio — only active for gold/silver categories",
+    "candle":           "Candlestick pattern detection (9 patterns: Morning Star, Engulfing, Hammer etc.)",
+    "EMA":              "EMA positioning across 9/20/50/200 EMAs",
+    "pivot":            "Pivot points (P, R1, R2, S1, S2) — floor/ceiling signals",
+    "SP500":            "S&P 500 previous-day return — global cue for NIFTY/BSE (equity/index only)"
+  },
+
+  "_default": {
+    "_note": "Applied when no ticker-specific entry exists. PCR is 0.6 because it uses simulated data. SP500 is 0.4 — meaningful but secondary to domestic signals.",
+    "RSI":               1.0,
+    "MACD":              1.0,
+    "supertrend":        1.0,
+    "bollinger":         1.0,
+    "ADX":               1.0,
+    "VIX":               1.0,
+    "PCR":               0.6,
+    "gold_silver_ratio": 1.0,
+    "candle":            0.8,
+    "EMA":               1.0,
+    "pivot":             0.9,
+    "SP500":             0.4
+  },
+
+  "_note_on_backtest": "run_backtest.py --update-indicator-weights computes 2-year per-indicator accuracy for each ticker, then sets weights proportional to lift above 33.3% baseline. Indicators at/below baseline get weight 0.2 (not 0 — sample may be too short). Indicators 10pp+ above baseline get weight 1.5-2.0."
+}

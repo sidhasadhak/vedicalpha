@@ -1,6 +1,7 @@
 """
 brihat_engine.py
 Brihat Samhita (Varahamihira, ~587 CE) — Transit & Mundane Engine
+Planet positions sourced from Swiss Ephemeris (Lahiri sidereal) via ephemeris.py.
 Vol II, key chapters for market prediction:
 
   Ch  8  — Brhaspati Charitra (Jupiter's transit through 12 signs)
@@ -206,43 +207,71 @@ class BrihatEngine:
     Brihat Samhita transit engine.
     Uses slow-moving planetary positions (Jupiter, Saturn, Rahu/Ketu) for
     medium-to-long-term market signals (1W–3M horizon).
+    Planet positions are fetched from Swiss Ephemeris (Lahiri sidereal) via ephemeris.py.
     """
 
     def get_brihat_signals(self, panchanga: dict, category: str = "equity") -> dict:
         """
         Master method. Returns composite Brihat Samhita signal.
-        panchanga: dict with keys:
-          jupiter_sign (1–12), saturn_sign (1–12), rahu_sign (1–12),
-          mars_sign (1–12), venus_sign (1–12)
-          (if not provided, defaults to approximate current positions)
+        panchanga: dict with optional key 'date' (date object or ISO string).
+        Planet positions are fetched from ephemeris for the prediction date.
         """
-        jupiter_sign = panchanga.get("jupiter_sign", self._default_jupiter())
-        saturn_sign  = panchanga.get("saturn_sign",  self._default_saturn())
-        rahu_sign    = panchanga.get("rahu_sign",    self._default_rahu())
-        mars_sign    = panchanga.get("mars_sign",    self._default_mars())
-        venus_sign   = panchanga.get("venus_sign",   self._default_venus())
+        from datetime import date as _date
+        from ephemeris import get_positions
+
+        # Resolve prediction date from panchanga
+        _date_raw = panchanga.get("date")
+        if isinstance(_date_raw, _date):
+            pred_date = _date_raw
+        elif isinstance(_date_raw, str):
+            try:
+                pred_date = _date.fromisoformat(_date_raw)
+            except (ValueError, TypeError):
+                pred_date = _date.today()
+        else:
+            pred_date = _date.today()
+
+        # Fetch real ephemeris positions (cached, Lahiri sidereal)
+        positions = get_positions(pred_date)
+
+        jupiter_sign = positions["jupiter"]["sign"]
+        jupiter_name = positions["jupiter"]["sign_name"]
+        jupiter_deg  = positions["jupiter"]["degree"]
+
+        saturn_sign  = positions["saturn"]["sign"]
+        saturn_name  = positions["saturn"]["sign_name"]
+        saturn_deg   = positions["saturn"]["degree"]
+
+        rahu_sign    = positions["rahu"]["sign"]
+        rahu_name    = positions["rahu"]["sign_name"]
+
+        mars_sign    = positions["mars"]["sign"]
+        mars_name    = positions["mars"]["sign_name"]
+
+        venus_sign   = positions["venus"]["sign"]
+        venus_name   = positions["venus"]["sign_name"]
 
         signals = []
 
         # 1. Jupiter transit signal
-        jup_sig = self._jupiter_signal(jupiter_sign, category)
+        jup_sig = self._jupiter_signal(jupiter_sign, jupiter_name, jupiter_deg, category)
         signals.append(jup_sig)
 
         # 2. Saturn transit signal
-        sat_sig = self._saturn_signal(saturn_sign, category)
+        sat_sig = self._saturn_signal(saturn_sign, saturn_name, saturn_deg, category)
         signals.append(sat_sig)
 
         # 3. Rahu eclipse signal
-        rahu_sig = self._rahu_signal(rahu_sign, category)
+        rahu_sig = self._rahu_signal(rahu_sign, rahu_name, category)
         signals.append(rahu_sig)
 
         # 4. Mars commodity surge signal
-        mars_sig = self._mars_signal(mars_sign, category)
+        mars_sig = self._mars_signal(mars_sign, mars_name, category)
         if mars_sig:
             signals.append(mars_sig)
 
         # 5. Venus prosperity signal
-        venus_sig = self._venus_signal(venus_sign, category)
+        venus_sig = self._venus_signal(venus_sign, venus_name, category)
         if venus_sig:
             signals.append(venus_sig)
 
@@ -278,11 +307,11 @@ class BrihatEngine:
 
     # ── Planet signal methods ─────────────────────────────────────────────────
 
-    def _jupiter_signal(self, sign: int, category: str) -> dict:
+    def _jupiter_signal(self, sign: int, sign_name: str, degree: float, category: str) -> dict:
         data = JUPITER_TRANSIT.get(sign, JUPITER_TRANSIT[1])
         cat_score = data["categories"].get(category, data["score"])
         return {
-            "name":        f"Jupiter Transit (Sign {sign})",
+            "name":        f"Jupiter Transit — {sign_name} ({degree:.1f}°)",
             "signal":      "bull" if cat_score > 0.10 else "bear" if cat_score < -0.10 else "neutral",
             "score":       round(cat_score, 3),
             "confidence":  75,
@@ -290,11 +319,11 @@ class BrihatEngine:
             "source":      "Brihat Samhita Ch 8 — Brhaspati Charitra",
         }
 
-    def _saturn_signal(self, sign: int, category: str) -> dict:
+    def _saturn_signal(self, sign: int, sign_name: str, degree: float, category: str) -> dict:
         data = SATURN_TRANSIT.get(sign, SATURN_TRANSIT[1])
         cat_score = data["categories"].get(category, data["score"])
         return {
-            "name":        f"Saturn Transit (Sign {sign})",
+            "name":        f"Saturn Transit — {sign_name} ({degree:.1f}°)",
             "signal":      "bull" if cat_score > 0.10 else "bear" if cat_score < -0.10 else "neutral",
             "score":       round(cat_score, 3),
             "confidence":  70,
@@ -302,14 +331,14 @@ class BrihatEngine:
             "source":      "Brihat Samhita Ch 32 — Shani Charitra",
         }
 
-    def _rahu_signal(self, sign: int, category: str) -> dict:
+    def _rahu_signal(self, sign: int, sign_name: str, category: str) -> dict:
         data = RAHU_TRANSIT.get(sign, RAHU_TRANSIT[1])
         # Gold/silver always get a boost when Rahu causes disruption
         score = data["score"]
         if category in ("gold", "silver") and score < 0:
             score = abs(score) * 0.5  # Safe haven demand
         return {
-            "name":        f"Rahu Transit (Sign {sign})",
+            "name":        f"Rahu Transit — {sign_name}",
             "signal":      "bull" if score > 0.10 else "bear" if score < -0.10 else "neutral",
             "score":       round(score, 3),
             "confidence":  60,
@@ -317,13 +346,13 @@ class BrihatEngine:
             "source":      "Brihat Samhita Ch 5 — Eclipse & Rahu effects",
         }
 
-    def _mars_signal(self, sign: int, category: str) -> dict | None:
+    def _mars_signal(self, sign: int, sign_name: str, category: str) -> dict | None:
         data = MARS_SIGN_COMMODITY.get(sign)
         if not data:
             return None
         cat_boost = data["category_boost"].get(category, data["score"] * 0.5)
         return {
-            "name":        f"Mars Position (Sign {sign})",
+            "name":        f"Mars Position — {sign_name}",
             "signal":      "bull" if cat_boost > 0.10 else "bear" if cat_boost < -0.10 else "neutral",
             "score":       round(cat_boost, 3),
             "confidence":  60,
@@ -331,59 +360,16 @@ class BrihatEngine:
             "source":      "Brihat Samhita Ch 24 — Planetary War (Graha Yuddha)",
         }
 
-    def _venus_signal(self, sign: int, category: str) -> dict | None:
+    def _venus_signal(self, sign: int, sign_name: str, category: str) -> dict | None:
         data = VENUS_SIGN_COMMODITY.get(sign)
         if not data:
             return None
         cat_boost = data["category_boost"].get(category, data["score"] * 0.3)
         return {
-            "name":        f"Venus Position (Sign {sign})",
+            "name":        f"Venus Position — {sign_name}",
             "signal":      "bull" if cat_boost > 0.10 else "bear" if cat_boost < -0.10 else "neutral",
             "score":       round(cat_boost, 3),
             "confidence":  60,
             "description": data["note"],
             "source":      "Brihat Samhita Ch 29 — Venus prosperity effects",
         }
-
-    # ── Default planet positions (approximate for April 2026) ────────────────
-    # These are updated from ephemeris; replace with real ephem data when available
-
-    def _default_jupiter(self) -> int:
-        """Jupiter in Gemini (~May 2024 – May 2025), Cancer (May 2025–Jun 2026)."""
-        from datetime import date
-        today = date.today()
-        # Jupiter entered Cancer around May 2025
-        if today >= date(2025, 5, 14):
-            return 4  # Cancer (exalted!) — extremely bullish
-        return 3  # Gemini
-
-    def _default_saturn(self) -> int:
-        """Saturn in Aquarius until Jan 2023, then Pisces, Aries from Mar 2025."""
-        from datetime import date
-        today = date.today()
-        if today >= date(2025, 3, 29):
-            return 1  # Aries (debilitated) — bearish
-        if today >= date(2023, 3, 7):
-            return 12  # Pisces — mildly bearish
-        return 11  # Aquarius — mildly bullish
-
-    def _default_rahu(self) -> int:
-        """Rahu in Pisces from Oct 2023 to Apr 2025, then Aquarius."""
-        from datetime import date
-        today = date.today()
-        if today >= date(2025, 4, 18):
-            return 11  # Aquarius — mild positive
-        return 12  # Pisces — mild negative
-
-    def _default_mars(self) -> int:
-        """Mars moves roughly every 45 days. Approximate from month."""
-        from datetime import date
-        month = date.today().month
-        # Rough approximation cycling through signs
-        return ((month * 3) % 12) + 1
-
-    def _default_venus(self) -> int:
-        """Venus moves roughly every 23 days. Approximate from month + day."""
-        from datetime import date
-        t = date.today()
-        return ((t.month + t.day // 14) % 12) + 1

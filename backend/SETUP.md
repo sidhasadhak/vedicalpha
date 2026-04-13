@@ -1,4 +1,4 @@
-# Vyapar Ratna AI — Setup Guide
+# VedicAlpha — Setup Guide
 ## Step-by-step: Python backend → iPhone app
 
 ---

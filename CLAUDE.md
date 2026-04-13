@@ -1,4 +1,4 @@
-# Vyapar Ratna AI — Complete Developer Guide
+# VedicAlpha — Complete Developer Guide
 
 > Read this file first in every session. It contains everything you need to
 > be fully oriented — architecture, conventions, weights, endpoints, state.
@@ -7,7 +7,7 @@
 
 ## What Is This Project?
 
-**Vyapar Ratna AI** is an Indian stock and commodity prediction app that combines
+**VedicAlpha** is an Indian stock and commodity prediction app that combines
 **six ancient Vedic astrology source books** with **ten Indian-market technical
 indicators** to produce BUY / SELL / HOLD signals with confidence scores.
 

@@ -29,6 +29,9 @@ config_secret.py
 *.sqlite
 *.sqlite3
 
+# ── Generated backtest output (large, regenerate with run_backtest.py) ────────
+backend/backtest_results.json
+
 # ── Books (PDFs — too large for git, store locally) ──────────────────────────
 backend/books/*.pdf
 backend/books/*.txt

@@ -25,13 +25,19 @@ from prasna_engine import PrasnaEngine
 from brihat_engine import BrihatEngine
 from mundane_engine import MundaneEngine
 
-# ── Load weights from rule_weights.json ──────────────────────────────────────
+# ── Load weights ─────────────────────────────────────────────────────────────
 _WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "rule_weights.json")
 with open(_WEIGHTS_FILE) as _f:
     _RULE_WEIGHTS = json.load(_f)
 
-HORIZON_VEDIC_WEIGHTS  = _RULE_WEIGHTS["horizon_weights"]
-CATEGORY_TECH_WEIGHT   = _RULE_WEIGHTS["category_technical_weight"]
+# New 2D table: _WEIGHT_TABLE[horizon][category] → {technical, vyapar_ratna, prasna, …}
+_WEIGHT_TABLE = _RULE_WEIGHTS["weights"]
+
+# ── Load per-ticker indicator weights ─────────────────────────────────────────
+_INDICATOR_WEIGHTS_FILE = os.path.join(os.path.dirname(__file__), "ticker_indicator_weights.json")
+with open(_INDICATOR_WEIGHTS_FILE) as _f:
+    _INDICATOR_WEIGHTS = json.load(_f)
+_DEFAULT_IND_WEIGHTS = _INDICATOR_WEIGHTS.get("_default", {})
 
 # Days lookup per horizon
 HORIZON_DAYS = {"1D": 1, "1W": 7, "2W": 14, "1M": 30, "3M": 90}
@@ -56,31 +62,28 @@ class PredictionEngine:
 
     def _resolve_weights(self, category: str, horizon: str) -> dict:
         """
-        Compute final engine weights for 6 Vedic engines + technical.
+        Lookup weights from the 2D table in rule_weights.json.
 
-        The technical weight is fixed per category (CATEGORY_TECH_WEIGHT).
-        The remaining (1 - tech_weight) is distributed among the 6 Vedic engines
-        according to the horizon_weights from rule_weights.json.
+        weights[horizon][category] gives absolute weights for all 7 components
+        (technical + 6 Vedic engines) that sum to 1.0.
 
-        Keys returned: jyotish, prasna, bhavartha, kalamrita, brihat, mundane, technical
+        Fallback chain: exact category → "equity" → hardcoded defaults.
+        Returns keys: technical, vyapar_ratna, prasna, bhavartha, kalamrita,
+                      brihat, mundane, jyotish (alias for vyapar_ratna).
         """
-        tech_w    = CATEGORY_TECH_WEIGHT.get(category, 0.40)
-        vedic_tot = 1.0 - tech_w
+        h_table  = _WEIGHT_TABLE.get(horizon, _WEIGHT_TABLE.get("1W", {}))
+        row      = h_table.get(category, h_table.get("equity", {}))
 
-        h_weights = HORIZON_VEDIC_WEIGHTS.get(horizon, HORIZON_VEDIC_WEIGHTS["1W"])
-        engine_keys = ["vyapar_ratna", "prasna", "bhavartha", "kalamrita", "brihat", "mundane"]
+        engine_keys = ["technical", "vyapar_ratna", "prasna",
+                       "bhavartha", "kalamrita", "brihat", "mundane"]
 
-        # Normalise horizon weights (in case they don't sum to 1.0 exactly)
-        h_sum = sum(h_weights.get(k, 0.0) for k in engine_keys)
-        if h_sum == 0:
-            h_sum = 1.0
+        # Normalise in case of rounding drift (rows should always sum to 1.0)
+        total = sum(row.get(k, 0.0) for k in engine_keys)
+        if total <= 0:
+            total = 1.0
 
-        resolved = {}
-        for k in engine_keys:
-            resolved[k] = round(vedic_tot * h_weights.get(k, 0.0) / h_sum, 4)
-        # jyotish alias for backward compat (Vyapar Ratna)
-        resolved["jyotish"] = resolved["vyapar_ratna"]
-        resolved["technical"] = round(tech_w, 4)
+        resolved = {k: round(row.get(k, 0.0) / total, 4) for k in engine_keys}
+        resolved["jyotish"] = resolved["vyapar_ratna"]   # backward-compat alias
         return resolved
 
     def predict(self, ticker: str, category: str, horizon: str,
@@ -103,6 +106,18 @@ class PredictionEngine:
         }
         _vaar_raw = str(panchanga.get("vaar", "")).lower()
         _vaar_idx = next((v for k, v in _vaar_map.items() if _vaar_raw.startswith(k)), 0)
+        # Resolve prediction date for ephemeris lookup
+        _date_raw = panchanga.get("date")
+        if isinstance(_date_raw, date):
+            _pred_date = _date_raw
+        elif isinstance(_date_raw, str):
+            try:
+                _pred_date = date.fromisoformat(_date_raw)
+            except (ValueError, TypeError):
+                _pred_date = date.today()
+        else:
+            _pred_date = date.today()
+
         kpanch = {
             "vaar_idx":  _vaar_idx,
             "tithi_num": panchanga.get("tithi", {}).get("number",
@@ -114,6 +129,7 @@ class PredictionEngine:
             "sankranti": panchanga.get("sankranti", ""),
             "category":  category,
             "horizon":   horizon,
+            "date":      _pred_date,   # real date → ephemeris-based engines use this
         }
 
         # ── JYOTISH SIGNALS ───────────────────────────────────────────────────
@@ -381,40 +397,57 @@ class PredictionEngine:
         if mode in ("both", "technical"):
             tech = self._compute_technical(price_data, horizon, category)
 
-            # Each indicator contributes equally within the technical weight
+            # Resolve per-ticker indicator weights
+            # Falls back to _default when ticker not in ticker_indicator_weights.json
+            ind_w = {**_DEFAULT_IND_WEIGHTS,
+                     **_INDICATOR_WEIGHTS.get(ticker.upper(), {})}
+
+            # Build indicator list: (weight_key, score, signal, note, display_name)
             tech_indicators = [
-                ("rsi",         tech["rsi_score"],         tech["rsi_signal"],         tech["rsi_note"],         f"RSI-14 ({tech['rsi']})"),
-                ("macd",        tech["macd_score"],        tech["macd_signal"],        tech["macd_note"],        f"MACD ({tech['macd_label']})"),
-                ("supertrend",  tech["st_score"],          tech["st_signal"],          tech["st_note"],          f"Supertrend ({tech['st_label']})"),
-                ("bollinger",   tech["bb_score"],          tech["bb_signal"],          tech["bb_note"],          f"Bollinger Bands ({tech['bb_label']})"),
-                ("adx",         tech["adx_score"],         tech["adx_signal"],         tech["adx_note"],         f"ADX ({tech['adx']})"),
-                ("india_vix",   tech["vix_score"],         tech["vix_signal"],         tech["vix_note"],         f"India VIX ({tech['vix']})"),
+                ("RSI",         tech["rsi_score"],  tech["rsi_signal"],  tech["rsi_note"],  f"RSI-14 ({tech['rsi']})"),
+                ("MACD",        tech["macd_score"], tech["macd_signal"], tech["macd_note"], f"MACD ({tech['macd_label']})"),
+                ("supertrend",  tech["st_score"],   tech["st_signal"],   tech["st_note"],   f"Supertrend ({tech['st_label']})"),
+                ("bollinger",   tech["bb_score"],   tech["bb_signal"],   tech["bb_note"],   f"Bollinger Bands ({tech['bb_label']})"),
+                ("ADX",         tech["adx_score"],  tech["adx_signal"],  tech["adx_note"],  f"ADX ({tech['adx']})"),
+                ("VIX",         tech["vix_score"],  tech["vix_signal"],  tech["vix_note"],  f"India VIX ({tech['vix']})"),
             ]
             if tech.get("pcr_score") is not None:
                 tech_indicators.append(
-                    ("pcr", tech["pcr_score"], tech["pcr_signal"], tech["pcr_note"], f"Put-Call Ratio ({tech['pcr']})")
+                    ("PCR", tech["pcr_score"], tech["pcr_signal"], tech["pcr_note"], f"Put-Call Ratio ({tech['pcr']})")
                 )
             if tech.get("ratio_score") is not None:
                 tech_indicators.append(
-                    ("ratio", tech["ratio_score"], tech["ratio_signal"], tech["ratio_note"], tech["ratio_label"])
+                    ("gold_silver_ratio", tech["ratio_score"], tech["ratio_signal"], tech["ratio_note"], tech["ratio_label"])
                 )
-            # Price action indicators — always present when OHLC available
             if tech.get("candle_score") is not None:
                 tech_indicators.append(
                     ("candle", tech["candle_score"], tech["candle_signal"], tech["candle_note"], f"Candle Pattern ({tech['candle_label']})")
                 )
             if tech.get("ema_score") is not None:
                 tech_indicators.append(
-                    ("ema", tech["ema_score"], tech["ema_signal"], tech["ema_note"], f"EMA Positioning ({tech['ema_label']})")
+                    ("EMA", tech["ema_score"], tech["ema_signal"], tech["ema_note"], f"EMA Positioning ({tech['ema_label']})")
                 )
             if tech.get("pivot_score") is not None:
                 tech_indicators.append(
                     ("pivot", tech["pivot_score"], tech["pivot_signal"], tech["pivot_note"], f"Pivot Points ({tech['pivot_label']})")
                 )
+            if tech.get("sp500_score") is not None:
+                tech_indicators.append(
+                    ("SP500", tech["sp500_score"], tech["sp500_signal"], tech["sp500_note"],
+                     f"S&P 500 Global Cue ({tech['sp500_ret']:+.1f}%)")
+                )
 
-            n = len(tech_indicators)
-            tech_total = 0.0
-            for _, score, signal, note, name in tech_indicators:
+            # Weighted sum using per-ticker indicator weights
+            # Normalise by total weight so magnitude is stable regardless of weights.
+            # When all weights=1 this equals the plain average.
+            tech_weighted = 0.0
+            weight_total  = 0.0
+            for wkey, score, signal, note, name in tech_indicators:
+                w = ind_w.get(wkey, 1.0)
+                if w <= 0:
+                    continue    # indicator disabled for this ticker
+                tech_weighted += score * w
+                weight_total  += w
                 factors.append({
                     "name":        name,
                     "signal":      signal,
@@ -422,10 +455,46 @@ class PredictionEngine:
                     "confidence":  round(tech["confidence"]),
                     "description": note,
                     "source":      "Technical analysis",
+                    "ind_weight":  round(w, 2),
                 })
-                tech_total += score
 
-            total_score += (tech_total / n) * weights["technical"] * n / 2
+            # Weighted average of indicator scores, scaled by the engine's weight.
+            # (Normalized average keeps total magnitude stable regardless of
+            # how many indicators are active or how weights are distributed.)
+            if weight_total > 0:
+                total_score += (tech_weighted / weight_total) * weights["technical"]
+
+            # ── MARKET REGIME FILTER (200-DMA) ────────────────────────────────
+            # Binary macro-level overlay — separate from the EMA positioning score.
+            # EMA score captures multi-timeframe trend structure (9/20/50/200 all counted).
+            # Regime filter captures the secular trend as a standalone signal.
+            above_200 = tech.get("above_200_ema")
+            if above_200 is not None:
+                if not above_200:
+                    regime_score, regime_signal = -0.10, "bear"
+                    regime_note = ("Price is below the 200-day EMA — secular bear trend active. "
+                                   "Vedic bull signals carry less conviction against the macro downtrend. "
+                                   "Best to wait for price to reclaim 200-DMA before acting on bullish calls.")
+                else:
+                    regime_score, regime_signal = +0.06, "bull"
+                    regime_note = ("Price is above the 200-day EMA — secular bull trend intact. "
+                                   "Dips are historically buying opportunities; bull signals have "
+                                   "higher follow-through probability in this regime.")
+                factors.append({
+                    "name":        "Market Regime (200-DMA)",
+                    "signal":      regime_signal,
+                    "score":       round(regime_score, 2),
+                    "confidence":  72,
+                    "description": regime_note,
+                    "source":      "Technical analysis — 200-DMA macro regime filter",
+                })
+                total_score += regime_score * weights["technical"]
+
+        # ── EVENT CALENDAR ────────────────────────────────────────────────────
+        _pred_date = kpanch.get("date", date.today())
+        event_factor = self._check_event_risk(_pred_date, category)
+        if event_factor:
+            factors.append(event_factor)
 
         # ── FINAL VERDICT ─────────────────────────────────────────────────────
         signal     = "bull" if total_score > 0.25 else "bear" if total_score < -0.25 else "neutral"
@@ -474,12 +543,18 @@ class PredictionEngine:
         if mixed_signals and confidence > 55:
             confidence = 55
 
+        # Event risk cap — high-impact events make any prediction less reliable
+        if any(f.get("is_event_risk") for f in factors) and confidence > 62:
+            confidence = 62
+
         return {
             "signal":        signal,
             "signal_label":  "Tezi ↑" if signal == "bull" else "Mandi ↓" if signal == "bear" else "Sama →",
             "confidence":    confidence,
             "score":         round(total_score, 3),
-            "expected_move": EXPECTED_MOVES.get(horizon, "1–5%"),
+            "expected_move": self._calc_expected_move(
+                price_data, horizon, total_score, confidence
+            ),
             "mixed_signals": mixed_signals,
             "engines_agreeing": engines_agreeing,
             "factors":       factors,
@@ -517,17 +592,37 @@ class PredictionEngine:
           7. Put-Call Ratio   — NSE options sentiment (index/equity only)
           8. Gold:Silver ratio — for MCX gold/silver category
         """
-        closes = price_data.get("closes", [])
-        highs  = price_data.get("highs",  [])
-        lows   = price_data.get("lows",   [])
+        _daily_closes = price_data.get("closes", [])
+        _daily_highs  = price_data.get("highs",  [])
+        _daily_lows   = price_data.get("lows",   [])
+        _daily_opens  = price_data.get("opens",  [])
+
+        # ── Horizon-appropriate bar resolution ────────────────────────────────
+        # 1D/1W/2W: use raw daily bars as-is.
+        # 1M:       use daily bars (200-day window needed for 200-DMA).
+        # 3M:       aggregate daily → weekly bars for trend indicators.
+        #           Weekly bars filter out intraday/intraweek noise and
+        #           make RSI/MACD/Bollinger reflect the 3-month trend properly.
+        if horizon == "3M" and len(_daily_closes) >= 30:
+            closes = self._aggregate_weekly(_daily_closes, "last")
+            highs  = self._aggregate_weekly(_daily_highs,  "max")  if _daily_highs else []
+            lows   = self._aggregate_weekly(_daily_lows,   "min")  if _daily_lows  else []
+            bar_label = "weekly"
+        else:
+            closes = _daily_closes
+            highs  = _daily_highs
+            lows   = _daily_lows
+            bar_label = "daily"
+
         live   = len(closes) >= 14
+        long_horizon = horizon in ("1M", "3M")
 
         # ── 1. RSI ────────────────────────────────────────────────────────────
         rsi       = self._calc_rsi(closes, 14) if live else round(40 + random.random() * 25, 1)
         rsi_score  = (rsi - 50) / 50
         rsi_signal = "bull" if rsi > 60 else "bear" if rsi < 40 else "neutral"
         rsi_note   = (
-            f"RSI-14 at {rsi:.1f} — "
+            f"RSI-14 ({bar_label}) at {rsi:.1f} — "
             + ("Overbought zone (>70). Profit-booking likely." if rsi > 70
                else "Oversold zone (<30). Bounce/reversal likely." if rsi < 30
                else "Neutral band (30–60). Wait for breakout confirmation." if rsi < 60
@@ -675,22 +770,158 @@ class PredictionEngine:
                 "ratio_label": ratio_label,
             })
 
-        # ── 9. Price action — Candlestick patterns ────────────────────────────
-        candle = self._detect_candle_pattern(closes, highs, lows,
-                                             price_data.get("opens", []))
-        result.update(candle)
+        # ── 9. Candlestick patterns ───────────────────────────────────────────
+        # Only meaningful for 1D/1W — a single-bar pattern tells nothing about
+        # direction over a month or quarter.  Use daily bars always (not weekly).
+        if not long_horizon:
+            candle = self._detect_candle_pattern(
+                _daily_closes, _daily_highs, _daily_lows, _daily_opens
+            )
+            result.update(candle)
 
-        # ── 10. Price action — EMA positioning ───────────────────────────────
-        ema_pa = self._calc_ema_positioning(closes)
+        # ── 10. EMA positioning ──────────────────────────────────────────────
+        # Always run on daily bars regardless of resolution used for other
+        # indicators — EMAs are defined on daily closes (9/20/50/200 EMA).
+        # For 200-DMA to compute, main.py must supply 200+ daily bars (1M/3M).
+        ema_pa = self._calc_ema_positioning(_daily_closes)
         result.update(ema_pa)
 
-        # ── 11. Price action — Pivot points ──────────────────────────────────
-        pivot_pa = self._calc_pivot_points(closes, highs, lows)
-        result.update(pivot_pa)
+        # ── 11. Pivot points ─────────────────────────────────────────────────
+        # Previous-session H/L/C → next-session support/resistance levels.
+        # Only meaningful for intraday and weekly swing trades (1D, 1W).
+        if horizon in ("1D", "1W"):
+            pivot_pa = self._calc_pivot_points(_daily_closes, _daily_highs, _daily_lows)
+            result.update(pivot_pa)
+
+        # ── 12. S&P 500 global cue (equity/index only) ────────────────────────
+        # S&P 500 prior-day return is a genuine leading signal for NIFTY/BSE open.
+        # Not relevant for commodities (gold moves inversely to USD, not S&P).
+        if category in ("equity", "index"):
+            sp_ret = self._fetch_sp500_return()
+            if sp_ret is not None:
+                if sp_ret > 1.5:
+                    sp_score, sp_signal = +0.28, "bull"
+                    sp_note = (f"S&P 500 gained {sp_ret:+.1f}% yesterday — strong global risk-on. "
+                               "NIFTY/BSE typically open 0.5–1% higher on such cues.")
+                elif sp_ret > 0.5:
+                    sp_score, sp_signal = +0.12, "bull"
+                    sp_note = f"S&P 500 up {sp_ret:+.1f}% yesterday — mild positive global cue for Indian equities."
+                elif sp_ret < -1.5:
+                    sp_score, sp_signal = -0.32, "bear"
+                    sp_note = (f"S&P 500 fell {sp_ret:+.1f}% yesterday — global risk-off. "
+                               "NIFTY/BSE likely to open under pressure.")
+                elif sp_ret < -0.5:
+                    sp_score, sp_signal = -0.14, "bear"
+                    sp_note = f"S&P 500 down {sp_ret:+.1f}% yesterday — mild negative global cue for Indian equities."
+                else:
+                    sp_score, sp_signal = 0.0, "neutral"
+                    sp_note = f"S&P 500 {sp_ret:+.1f}% yesterday — flat global cue; India moves on domestic factors."
+                result.update({
+                    "sp500_ret": sp_ret, "sp500_score": sp_score,
+                    "sp500_signal": sp_signal, "sp500_note": sp_note,
+                })
 
         return result
 
     # ── Individual indicator calculators ──────────────────────────────────────
+
+    def _calc_expected_move(self, price_data: dict, horizon: str,
+                             score: float, confidence: int) -> str:
+        """
+        Directional expected move — the actual prediction output, not a volatility lookup.
+
+        Logic:
+          1. Compute σ_horizon from the ticker's recent daily price volatility
+             (RMS of last 20 daily returns scaled to the horizon window).
+             This gives a ticker-specific magnitude scale — Crude Oil moves very
+             differently from TCS over the same period.
+
+          2. Center = score × σ_horizon
+             score is -1 … +1 and encodes both direction and strength from the
+             combined Vedic + Technical analysis. A score of +0.60 means a strong
+             bull signal expected to capture ~60% of the 1-sigma upside move.
+
+          3. Half-band = (1 − confidence/100) × σ_horizon × 0.55
+             Low confidence → wide band (uncertain). High confidence → tight band.
+             This makes precision a direct function of how aligned the engines are.
+
+          4. Format directionally:
+             Both ends positive  →  "+4.2% to +7.8%"   (clear bull)
+             Both ends negative  →  "−6.1% to −2.3%"   (clear bear)
+             Straddles zero      →  "−1.8% to +3.2%"   (uncertain — reduce size)
+
+        Falls back to static ranges when < 5 bars of price history are available.
+        """
+        closes  = price_data.get("closes", [])
+        _static = EXPECTED_MOVES.get(horizon, "1–5%")
+
+        if len(closes) < 5:
+            return _static
+
+        # ── Step 1: ticker volatility ──────────────────────────────────────────
+        window  = min(20, len(closes) - 1)
+        rets    = [
+            abs(closes[i] - closes[i - 1]) / closes[i - 1]
+            for i in range(len(closes) - window, len(closes))
+            if closes[i - 1] > 0
+        ]
+        if not rets:
+            return _static
+
+        sigma_daily   = (sum(r ** 2 for r in rets) / len(rets)) ** 0.5
+        _tdays        = {"1D": 1, "1W": 5, "2W": 10, "1M": 21, "3M": 63}
+        sigma_h       = sigma_daily * (_tdays.get(horizon, 21) ** 0.5) * 100  # as %
+
+        # ── Step 2: directional center ─────────────────────────────────────────
+        center        = score * sigma_h          # signed; +score → positive center
+
+        # ── Step 3: confidence-derived uncertainty band ────────────────────────
+        half_band     = (1.0 - confidence / 100.0) * sigma_h * 0.55
+
+        low  = int(round(center - half_band))
+        high = int(round(center + half_band))
+
+        # Ensure minimum width of 1pp so range is never a single point
+        if high <= low:
+            high = low + 1
+
+        # ── Step 4: directional string formatting (whole numbers, signed) ──────
+        def _pct(v: int) -> str:
+            if v == 0:
+                return "0%"
+            return f"+{v}%" if v > 0 else f"{v}%"
+
+        if low >= 0:
+            return f"+{low}% to +{high}%"
+        elif high <= 0:
+            return f"{low}% to {high}%"
+        else:
+            return f"{_pct(low)} to {_pct(high)}"   # straddles zero
+
+    def _aggregate_weekly(self, bars: list, agg: str = "last", window: int = 5) -> list:
+        """
+        Aggregate daily bars to weekly bars for longer-horizon indicators.
+          agg="last"  → take the last bar of each week (weekly close / open)
+          agg="max"   → take the highest value (weekly high)
+          agg="min"   → take the lowest value (weekly low)
+        Drops the partial first chunk if it's shorter than window.
+        """
+        if not bars:
+            return bars
+        result = []
+        # Walk backwards in chunks of `window` so the most-recent week is complete
+        i = len(bars)
+        while i >= window:
+            chunk = bars[i - window: i]
+            if agg == "last":
+                result.append(chunk[-1])
+            elif agg == "max":
+                result.append(max(chunk))
+            elif agg == "min":
+                result.append(min(chunk))
+            i -= window
+        result.reverse()
+        return result
 
     def _calc_rsi(self, closes: list, period: int = 14) -> float:
         if len(closes) < period + 1:
@@ -822,14 +1053,13 @@ class PredictionEngine:
 
     def _fetch_india_vix(self) -> float:
         """
-        Fetch India VIX from NSE. Falls back to a realistic simulated value.
+        Fetch India VIX from NSE live. Falls back to simulation.
         India VIX typically trades 10–30; normal range 12–18.
         """
         try:
-            from nsepython import nse_get_index_data
-            # India VIX is index symbol "INDIA VIX" on NSE
-            data = nse_get_index_data("INDIA VIX")
-            return float(data.get("last", 15.5))
+            from nsepython import nse_get_index_quote
+            data = nse_get_index_quote("India VIX")
+            return float(data["last"])
         except Exception:
             pass
         try:
@@ -839,7 +1069,6 @@ class PredictionEngine:
                 return round(float(hist["Close"].iloc[-1]), 2)
         except Exception:
             pass
-        # Simulated: log-normal around 15 with realistic range
         return round(max(9.0, min(35.0, 14.5 + random.gauss(0, 2.5))), 1)
 
     def _fetch_pcr(self) -> float:
@@ -871,6 +1100,22 @@ class PredictionEngine:
         except Exception:
             pass
         return round(max(55.0, min(100.0, 78 + random.gauss(0, 4))), 1)
+
+    def _fetch_sp500_return(self) -> float | None:
+        """
+        S&P 500 previous trading day return (%).
+        Used as a global-market cue for NIFTY/BSE equity predictions.
+        Returns None if data unavailable (no failure — just skip the factor).
+        """
+        try:
+            import yfinance as yf
+            hist = yf.download("^GSPC", period="5d", interval="1d", progress=False)
+            closes = hist["Close"].dropna().values.flatten()
+            if len(closes) >= 2:
+                return round((float(closes[-1]) - float(closes[-2])) / float(closes[-2]) * 100, 2)
+        except Exception:
+            pass
+        return None
 
     # ── Price action calculators ──────────────────────────────────────────────
 
@@ -1054,14 +1299,18 @@ class PredictionEngine:
         periods   = [9, 20, 50, 200]
         labels_p  = ["9 EMA", "20 EMA", "50 EMA", "200 EMA"]
         price     = closes[-1] if closes else 0
-        above     = []
-        below     = []
+        above         = []
+        below         = []
+        above_200_ema = None  # exposed for regime filter
 
         for p, lbl in zip(periods, labels_p):
             val = ema(closes, p)
             if val is None:
                 continue
-            if price > val:
+            is_above = price > val
+            if p == 200:
+                above_200_ema = is_above
+            if is_above:
                 above.append(lbl)
             else:
                 below.append(lbl)
@@ -1106,7 +1355,8 @@ class PredictionEngine:
                        "Mixed EMA picture — no clean trend. Favour range-trading strategies.")
 
         return {"ema_score": ema_score, "ema_signal": signal,
-                "ema_label": label, "ema_note": note}
+                "ema_label": label, "ema_note": note,
+                "above_200_ema": above_200_ema}
 
     def _calc_pivot_points(self, closes: list, highs: list, lows: list) -> dict:
         """
@@ -1185,6 +1435,70 @@ class PredictionEngine:
             "pivot_S1": round(S1, 1), "pivot_S2": round(S2, 1),
         }
 
+    def _check_event_risk(self, pred_date: date, category: str) -> dict | None:
+        """
+        Returns an event-risk factor if pred_date falls on/near a market-moving event.
+        Events checked:
+          • F&O expiry (last Thursday of each month) — equity/index only
+          • RBI MPC decision dates — equity/index only
+          • Union Budget (Feb 1) — all categories
+          • Quarterly results season (±30 days from quarter-end) — equity only
+        """
+        events = []
+
+        # F&O expiry: last Thursday of each calendar month
+        if category in ("equity", "index"):
+            from calendar import monthrange
+            _, last_day = monthrange(pred_date.year, pred_date.month)
+            fo = date(pred_date.year, pred_date.month, last_day)
+            while fo.weekday() != 3:   # 3 = Thursday
+                fo -= timedelta(days=1)
+            if abs((pred_date - fo).days) <= 1:
+                when = "today" if pred_date == fo else ("tomorrow" if fo > pred_date else "yesterday")
+                events.append(f"F&O expiry {when} ({fo.strftime('%b %d')}) — option unwinding drives intraday spikes")
+
+        # RBI MPC decision dates 2025–2026 (outcomes released ~10 AM IST on decision day)
+        if category in ("equity", "index"):
+            rbi_dates = {
+                date(2025, 4, 9), date(2025, 6, 6), date(2025, 8, 8),
+                date(2025, 10, 8), date(2025, 12, 5),
+                date(2026, 2, 7), date(2026, 4, 9), date(2026, 6, 5),
+            }
+            closest_rbi = min((abs((pred_date - d).days) for d in rbi_dates), default=999)
+            if closest_rbi <= 1:
+                events.append("RBI MPC rate decision within 1 day — rate-sensitive sectors volatile")
+
+        # Union Budget (Feb 1 every year)
+        budget_day = date(pred_date.year, 2, 1)
+        if abs((pred_date - budget_day).days) <= 1:
+            events.append(f"Union Budget {'today' if pred_date == budget_day else 'within 1 day'} — all sectors impacted")
+
+        # Quarterly results season (equity only): ~Apr 15–May 15, Jul 15–Aug 15, Oct 15–Nov 15, Jan 15–Feb 15
+        if category == "equity":
+            y = pred_date.year
+            results_windows = [
+                (date(y, 4, 15), date(y, 5, 15)),
+                (date(y, 7, 15), date(y, 8, 15)),
+                (date(y, 10, 15), date(y, 11, 15)),
+                (date(y, 1, 15), date(y, 2, 15)),
+                (date(y - 1, 10, 15), date(y - 1, 11, 15)),  # handle Jan look-back
+            ]
+            if any(s <= pred_date <= e for s, e in results_windows):
+                events.append("Q-results season — individual stock moves can be sharp and unpredictable")
+
+        if not events:
+            return None
+
+        return {
+            "name":        "Event Risk",
+            "signal":      "neutral",
+            "score":       0.0,
+            "confidence":  50,
+            "description": " | ".join(events) + ". Reduce position size and widen stops during high-impact events.",
+            "source":      "Event calendar (F&O expiry, RBI MPC, Budget, Results season)",
+            "is_event_risk": True,
+        }
+
     def _score_to_signal(self, score: float) -> str:
         return "bull" if score > 0 else "bear" if score < 0 else "neutral"
 
@@ -1207,69 +1521,191 @@ class PredictionEngine:
             points.append({"label": lbl, "value": round(base, 2)})
         return points
 
-    def backtest(self, ticker: str, horizon: str, days: int, category: str = "equity") -> dict:
-        """
-        Back-test Jyotish rules against real historical price data from yfinance.
-        Actual outcome = price direction over the horizon window starting from `target`.
-        """
-        price_map = self._load_price_history(ticker, days + 30)
+    # ── Per-engine helpers for backtest attribution ───────────────────────────
 
+    def _build_kpanch(self, panchanga: dict, category: str, horizon: str) -> dict:
+        """
+        Build the normalised kpanch dict shared by all Vedic engines.
+        Includes the actual date so that Brihat/Mundane engines can call
+        the real ephemeris instead of using hardcoded planet positions.
+        """
+        _vaar_map = {
+            "sun":0,"ravi":0,"rav":0,"mon":1,"som":1,
+            "tue":2,"man":2,"wed":3,"bud":3,"thu":4,
+            "gur":4,"fri":5,"shu":5,"sat":6,"sha":6,
+        }
+        _raw = str(panchanga.get("vaar", "")).lower()
+        _idx = next((v for k, v in _vaar_map.items() if _raw.startswith(k)), 0)
+
+        # Resolve the prediction date: panchanga["date"] is set by jyotish.get_panchanga()
+        _date_raw = panchanga.get("date")
+        if isinstance(_date_raw, date):
+            _pred_date = _date_raw
+        elif isinstance(_date_raw, str):
+            try:
+                _pred_date = date.fromisoformat(_date_raw)
+            except (ValueError, TypeError):
+                _pred_date = date.today()
+        else:
+            _pred_date = date.today()
+
+        return {
+            "vaar_idx":  _idx,
+            "tithi_num": panchanga.get("tithi", {}).get("number",
+                         panchanga.get("tithi_num", 1)),
+            "paksha":    panchanga.get("tithi", {}).get("paksha",
+                         panchanga.get("paksha", "shukla")),
+            "moon_age":  panchanga.get("tithi", {}).get("moon_age",
+                         panchanga.get("moon_age", 0.0)),
+            "sankranti": panchanga.get("sankranti", ""),
+            "category":  category,
+            "horizon":   horizon,
+            "date":      _pred_date,   # date object — used by ephemeris-based engines
+        }
+
+    def _engine_score(self, engine_name: str, kpanch: dict,
+                      panchanga: dict, category: str) -> float:
+        """
+        Raw directional score from one Vedic engine.
+        Mirrors the scoring logic in predict() but returns the unweighted
+        composite score for that engine alone. Used only in backtest attribution.
+        Positive → bullish lean, negative → bearish lean.
+        """
+        try:
+            if engine_name == "vyapar_ratna":
+                sigs = self.jyotish.get_all_signals(panchanga, category)
+                score = (sigs["vaar"]["signal"]      * sigs["vaar"]["reliability"]
+                         + sigs["tithi"]["signal"]   * 0.65 * 0.8
+                         + sigs["sankranti"]["signal"] * 0.55 * 0.7)
+                if panchanga.get("five_thursday"): score -= 0.3
+                if panchanga.get("five_saturday"): score += 0.4
+                return score
+
+            elif engine_name == "bhavartha":
+                b = self.bhavartha.get_bhavartha_signals(panchanga)
+                return (b["dhanayoga"]["score"] * 0.90
+                        + b["rajayoga"]["score"]  * 0.85
+                        + (b["maraka"]["score"]   * 1.10 if b["maraka"]["signal"] != 0 else 0.0)
+                        + b["dasa"]["score"]      * 0.80
+                        + b["malika"]["score"]    * 0.75)
+
+            elif engine_name == "kalamrita":
+                k = self.kalamrita.get_kalamrita_signals(kpanch)
+                return ((k["karakatva"]["score"]      - 0.50) * 0.90
+                        + (k["dhana_yoga"]["score"]   - 0.50) * 0.95
+                        + (k["viparita_raja"]["score"]- 0.50) * 0.60
+                        + (k["dasa_antardasa"]["score"]- 0.50) * 0.75)
+
+            elif engine_name == "prasna":
+                return self.prasna.get_prasna_signals(kpanch, category)["score"]
+
+            elif engine_name == "brihat":
+                return self.brihat.get_brihat_signals(kpanch, category)["score"]
+
+            elif engine_name == "mundane":
+                return self.mundane.get_mundane_signals(kpanch, category)["score"]
+
+        except Exception:
+            pass
+        return 0.0
+
+    # ── Main backtest ─────────────────────────────────────────────────────────
+
+    def backtest(self, ticker: str, horizon: str, days: int,
+                 category: str = "equity", verbose: bool = False) -> dict:
+        """
+        Back-test all 6 Vedic engines against real yfinance closing prices.
+
+        Returns:
+          accuracy            — composite (all 6 engines) directional accuracy %
+          engine_accuracy     — per-engine directional accuracy %
+          total_days_tested   — number of valid test windows
+          results             — last 20 daily records for inspection
+          note                — methodology description
+        """
+        price_map    = self._load_price_history(ticker, days + 60)
         trading_days = sorted(price_map.keys())
+
         if len(trading_days) < 2:
             return {
                 "ticker": ticker, "horizon": horizon, "days": days,
-                "accuracy": None, "results": [],
-                "note": f"Could not fetch price history for {ticker} from yfinance."
+                "accuracy": None, "engine_accuracy": {}, "results": [],
+                "total_days_tested": 0,
+                "note": f"No price history available for {ticker} via yfinance.",
             }
 
-        horizon_days = HORIZON_DAYS.get(horizon, HORIZON_DAYS["1W"])
+        horizon_days  = HORIZON_DAYS.get(horizon, HORIZON_DAYS["1W"])
+        ALL_ENGINES   = ["vyapar_ratna", "bhavartha", "kalamrita",
+                         "prasna", "brihat", "mundane"]
+        # Prasna weight is 0 at monthly+ horizons — exclude from scoring
+        active_engines = [e for e in ALL_ENGINES
+                          if not (e == "prasna" and horizon in ("1M", "3M"))]
+
+        composite_correct = 0
+        eng_correct = {e: 0 for e in active_engines}
+        eng_total   = {e: 0 for e in active_engines}
         results = []
-        correct = 0
+        n_tested = 0
 
         for idx, target in enumerate(trading_days[:-1]):
-            # Find closing price `horizon_days` ahead
             future_idx = min(idx + horizon_days, len(trading_days) - 1)
             future_day = trading_days[future_idx]
             if future_day == target:
                 continue
 
-            start_price  = price_map[target]
-            end_price    = price_map[future_day]
-            pct_change   = (end_price - start_price) / start_price * 100
+            pct = (price_map[future_day] - price_map[target]) / price_map[target] * 100
+            actual = "bull" if pct > 0.5 else "bear" if pct < -0.5 else "neutral"
 
-            # Label actual direction: >0.5% = bull, <-0.5% = bear, else neutral
-            if pct_change > 0.5:
-                actual = "bull"
-            elif pct_change < -0.5:
-                actual = "bear"
-            else:
-                actual = "neutral"
+            try:
+                panch  = self.jyotish.get_panchanga(target)
+                kpanch = self._build_kpanch(panch, category, horizon)
+                pred   = self.predict(ticker, category, horizon, "jyotish", panch, {})
+            except Exception:
+                continue
 
-            panch = self.jyotish.get_panchanga(target)
-            pred  = self.predict(ticker, category, horizon, "jyotish", panch, {})
-            hit   = pred["signal"] == actual
-            correct += 1 if hit else 0
+            comp_hit = pred["signal"] == actual
+            composite_correct += int(comp_hit)
+            n_tested += 1
+
+            # Per-engine attribution
+            eng_row = {}
+            for eng in active_engines:
+                raw     = self._engine_score(eng, kpanch, panch, category)
+                esig    = "bull" if raw > 0 else "bear" if raw < 0 else "neutral"
+                hit     = esig == actual
+                eng_correct[eng] += int(hit)
+                eng_total[eng]   += 1
+                eng_row[eng]     = {"signal": esig, "score": round(raw, 3), "correct": hit}
+
             results.append({
-                "date":      str(target),
-                "predicted": pred["signal"],
-                "actual":    actual,
-                "pct_change": round(pct_change, 2),
-                "correct":   hit,
+                "date":       str(target),
+                "predicted":  pred["signal"],
+                "actual":     actual,
+                "pct_change": round(pct, 2),
+                "correct":    comp_hit,
+                "engines":    eng_row,
             })
 
-        if not results:
-            accuracy = None
-        else:
-            accuracy = round(correct / len(results) * 100, 1)
+            if verbose and n_tested % 50 == 0:
+                print(f"    … {n_tested} days tested", flush=True)
+
+        accuracy = round(composite_correct / n_tested * 100, 1) if n_tested else None
+        engine_accuracy = {
+            e: round(eng_correct[e] / eng_total[e] * 100, 1) if eng_total[e] else None
+            for e in active_engines
+        }
 
         return {
-            "ticker":   ticker,
-            "horizon":  horizon,
-            "days":     days,
-            "accuracy": accuracy,
-            "total_days_tested": len(results),
-            "results":  results[-10:],
-            "note": "Actual outcome derived from real yfinance closing prices."
+            "ticker":            ticker,
+            "horizon":           horizon,
+            "days":              days,
+            "accuracy":          accuracy,
+            "total_days_tested": n_tested,
+            "engine_accuracy":   engine_accuracy,
+            "results":           results[-20:],
+            "note": ("6-engine Jyotish composite vs yfinance closing prices. "
+                     "Correct = signal matches actual ±0.5% close-to-close direction. "
+                     "Random baseline = 33.3%."),
         }
 
     def _load_price_history(self, ticker: str, days: int) -> dict:
@@ -1280,9 +1716,17 @@ class PredictionEngine:
             end   = date.today()
             start = end - timedelta(days=days)
             yf_map = {
-                "GOLD": "GC=F", "SILVER": "SI=F", "CRUDEOIL": "CL=F",
-                "COPPER": "HG=F", "NATURALGAS": "NG=F",
-                "NIFTY50": "^NSEI", "BANKNIFTY": "^NSEBANK",
+                # Commodities (USD futures — converted later if needed)
+                "GOLD": "GC=F", "GOLDM": "GC=F",
+                "SILVER": "SI=F", "SILVERM": "SI=F",
+                "CRUDEOIL": "CL=F", "NATURALGAS": "NG=F",
+                "COPPER": "HG=F",
+                # Indices (already in INR on yfinance)
+                "NIFTY50":    "^NSEI",
+                "BANKNIFTY":  "^NSEBANK",
+                "SENSEX":     "^BSESN",
+                "NIFTYMIDCAP":"^NSEMDCP50",
+                "NIFTYIT":    "^CNXIT",
             }
             symbol = yf_map.get(ticker.upper(), f"{ticker}.NS")
             hist   = yf.Ticker(symbol).history(start=str(start), end=str(end))
@@ -1291,3 +1735,171 @@ class PredictionEngine:
             return {d.date(): round(float(c), 2) for d, c in zip(hist.index, hist["Close"])}
         except Exception:
             return {}
+
+    def _load_ohlc_history(self, ticker: str, days: int) -> dict:
+        """
+        Returns {date: {"close": float, "high": float, "low": float, "open": float}}
+        for `days` of history via yfinance. Used by backtest_technical().
+        """
+        try:
+            import yfinance as yf
+            from datetime import timedelta
+            end   = date.today()
+            start = end - timedelta(days=days)
+            yf_map = {
+                "GOLD": "GC=F", "GOLDM": "GC=F",
+                "SILVER": "SI=F", "SILVERM": "SI=F",
+                "CRUDEOIL": "CL=F", "NATURALGAS": "NG=F",
+                "COPPER": "HG=F",
+                "NIFTY50":    "^NSEI",
+                "BANKNIFTY":  "^NSEBANK",
+                "SENSEX":     "^BSESN",
+                "NIFTYMIDCAP":"^NSEMDCP50",
+                "NIFTYIT":    "^CNXIT",
+            }
+            symbol = yf_map.get(ticker.upper(), f"{ticker}.NS")
+            hist   = yf.Ticker(symbol).history(start=str(start), end=str(end))
+            if hist.empty:
+                return {}
+            result = {}
+            for row in hist.itertuples():
+                result[row.Index.date()] = {
+                    "close": round(float(row.Close), 4),
+                    "high":  round(float(row.High),  4),
+                    "low":   round(float(row.Low),   4),
+                    "open":  round(float(row.Open),  4),
+                }
+            return result
+        except Exception:
+            return {}
+
+    def _extract_tech_signals(self, sorted_days: list, ohlc: dict,
+                              up_to_idx: int, category: str) -> dict:
+        """
+        Compute technical indicator signals using OHLC data available up to
+        sorted_days[up_to_idx]. Returns {indicator_key: signal_str} dict.
+        Used internally by backtest_technical().
+        """
+        window_days = sorted_days[:up_to_idx + 1][-65:]   # last 65 bars
+        closes = [ohlc[d]["close"] for d in window_days]
+        highs  = [ohlc[d]["high"]  for d in window_days]
+        lows   = [ohlc[d]["low"]   for d in window_days]
+        opens  = [ohlc[d]["open"]  for d in window_days]
+
+        if len(closes) < 5:
+            return {}
+
+        price_data = {
+            "closes": closes, "highs": highs,
+            "lows": lows, "opens": opens,
+            "price": closes[-1],
+        }
+        tech = self._compute_technical(price_data, "1D", category)
+
+        signals: dict = {
+            "RSI":        tech["rsi_signal"],
+            "MACD":       tech["macd_signal"],
+            "supertrend": tech["st_signal"],
+            "bollinger":  tech["bb_signal"],
+            "ADX":        tech["adx_signal"],
+            "VIX":        tech["vix_signal"],
+        }
+        if "pcr_signal" in tech:
+            signals["PCR"] = tech["pcr_signal"]
+        if "ratio_signal" in tech:
+            signals["gold_silver_ratio"] = tech["ratio_signal"]
+        if "candle_signal" in tech:
+            signals["candle"] = tech["candle_signal"]
+        if "ema_signal" in tech:
+            signals["EMA"] = tech["ema_signal"]
+        if "pivot_signal" in tech:
+            signals["pivot"] = tech["pivot_signal"]
+        return signals
+
+    def backtest_technical(self, ticker: str, horizon: str, days: int,
+                           category: str = "equity",
+                           verbose: bool = False) -> dict:
+        """
+        Backtest each technical indicator independently against historical
+        OHLC data for `ticker`.
+
+        At each test date, the indicator sees only the past data (no look-ahead).
+        Returns per-indicator directional accuracy % over the test window.
+        Used by run_backtest.py --update-indicator-weights.
+
+        Returns:
+          indicator_accuracy  — {indicator_key: accuracy_pct} (None if <10 samples)
+          total_days_tested   — number of valid windows
+          suggested_weights   — {indicator_key: suggested_weight} derived from lift
+        """
+        ohlc = self._load_ohlc_history(ticker, days + 90)
+        if not ohlc:
+            return {
+                "ticker": ticker, "horizon": horizon,
+                "indicator_accuracy": {}, "total_days_tested": 0,
+                "suggested_weights": {},
+                "note": f"No OHLC history available for {ticker}.",
+            }
+
+        sorted_days   = sorted(ohlc.keys())
+        horizon_days  = HORIZON_DAYS.get(horizon, HORIZON_DAYS["1W"])
+        BASELINE      = 33.3
+
+        ind_correct: dict[str, int] = {}
+        ind_total:   dict[str, int] = {}
+        n_tested = 0
+
+        for idx in range(len(sorted_days) - 1):
+            target     = sorted_days[idx]
+            future_idx = min(idx + horizon_days, len(sorted_days) - 1)
+            future_day = sorted_days[future_idx]
+            if future_day == target:
+                continue
+
+            pct    = (ohlc[future_day]["close"] - ohlc[target]["close"]) / ohlc[target]["close"] * 100
+            actual = "bull" if pct > 0.5 else "bear" if pct < -0.5 else "neutral"
+
+            try:
+                signals = self._extract_tech_signals(sorted_days, ohlc, idx, category)
+            except Exception:
+                continue
+
+            if not signals:
+                continue
+
+            n_tested += 1
+            for ind_key, sig in signals.items():
+                if ind_key not in ind_correct:
+                    ind_correct[ind_key] = 0
+                    ind_total[ind_key]   = 0
+                ind_correct[ind_key] += int(sig == actual)
+                ind_total[ind_key]   += 1
+
+            if verbose and n_tested % 50 == 0:
+                print(f"    … {n_tested} windows", flush=True)
+
+        indicator_accuracy: dict[str, float | None] = {
+            k: round(ind_correct[k] / ind_total[k] * 100, 1) if ind_total.get(k, 0) >= 10 else None
+            for k in ind_total
+        }
+
+        # Suggest weights: lift = accuracy − baseline, proportional allocation
+        # Floor at 0.2 (don't fully silence an indicator on limited data)
+        lifts = {k: max(0.2, (acc - BASELINE)) if acc is not None else 0.2
+                 for k, acc in indicator_accuracy.items()}
+        lift_max = max(lifts.values()) if lifts else 1.0
+        suggested: dict[str, float] = {
+            k: round(max(0.0, min(2.0, v / lift_max * 1.5)), 2)
+            for k, v in lifts.items()
+        }
+
+        return {
+            "ticker":              ticker,
+            "horizon":             horizon,
+            "total_days_tested":   n_tested,
+            "indicator_accuracy":  indicator_accuracy,
+            "suggested_weights":   suggested,
+            "note": ("Per-indicator technical backtest. "
+                     "Correct = signal matches actual ±0.5% close-to-close. "
+                     f"Random baseline = {BASELINE}%."),
+        }

@@ -199,13 +199,32 @@ class MundaneEngine:
         """
         Master method. Returns composite mundane signal.
         panchanga: dict with vaar_idx, tithi_num, paksha, moon_sign,
-                   sun_sign (optional), ritu (optional), samvatsara_idx (optional)
+                   and optional 'date' key (date object or ISO string).
+        Sun sign is fetched from Swiss Ephemeris (Lahiri sidereal) for the prediction date.
         """
-        moon_sign       = panchanga.get("moon_sign", 1)
-        sun_sign        = panchanga.get("sun_sign", self._current_sun_sign())
-        ritu            = panchanga.get("ritu", self._current_ritu())
-        samvatsara_idx  = panchanga.get("samvatsara_idx", self._current_samvatsara())
-        hora_planet     = panchanga.get("hora_planet", self._current_hora())
+        from ephemeris import get_positions
+
+        # Resolve prediction date from panchanga
+        _date_raw = panchanga.get("date")
+        if isinstance(_date_raw, date):
+            pred_date = _date_raw
+        elif isinstance(_date_raw, str):
+            try:
+                pred_date = date.fromisoformat(_date_raw)
+            except (ValueError, TypeError):
+                pred_date = date.today()
+        else:
+            pred_date = date.today()
+
+        # Fetch real ephemeris positions for the prediction date
+        positions   = get_positions(pred_date)
+        sun_sign    = positions["sun"]["sign"]
+        sun_name    = positions["sun"]["sign_name"]
+        moon_sign   = panchanga.get("moon_sign", positions["moon"]["sign"])
+
+        ritu           = panchanga.get("ritu", self._ritu_for_date(pred_date))
+        samvatsara_idx = panchanga.get("samvatsara_idx", self._samvatsara_for_date(pred_date))
+        hora_planet    = panchanga.get("hora_planet", self._current_hora())
 
         signals = []
 
@@ -218,11 +237,11 @@ class MundaneEngine:
         signals.append(ritu_sig)
 
         # 3. Month-specific Indian market bias
-        month_sig = self._month_signal(category)
+        month_sig = self._month_signal(category, pred_date)
         signals.append(month_sig)
 
         # 4. Sun sign (Surya Sankranti) monthly outlook
-        sun_sig = self._sun_sign_signal(sun_sign, category)
+        sun_sig = self._sun_sign_signal(sun_sign, sun_name, category)
         signals.append(sun_sig)
 
         # 5. Moon sign quality (Chara/Sthira/Dwiswabhava)
@@ -295,8 +314,9 @@ class MundaneEngine:
             "source":      "Mediniya Jyotish — Ritu (seasonal) commodity effects",
         }
 
-    def _month_signal(self, category: str) -> dict:
-        month = date.today().month
+    def _month_signal(self, category: str, pred_date: date | None = None) -> dict:
+        d = pred_date or date.today()
+        month = d.month
         score, note = MONTH_MARKET_BIAS.get(month, (0.0, ""))
         # Gold gets Sharad/Diwali boost in Oct–Nov
         if category in ("gold", "silver") and month in (10, 11):
@@ -310,13 +330,13 @@ class MundaneEngine:
             "source":      "Mediniya Jyotish + BSE/NSE seasonal patterns",
         }
 
-    def _sun_sign_signal(self, sun_sign: int, category: str) -> dict:
+    def _sun_sign_signal(self, sun_sign: int, sun_name: str, category: str) -> dict:
         score, note = SUN_SIGN_MARKET.get(sun_sign, (0.0, ""))
         # Gold boosted when Sun in Taurus or Libra
         if category in ("gold", "silver") and sun_sign in (2, 7):
             score += 0.15
         return {
-            "name":        f"Surya Sankranti (Sun in Sign {sun_sign})",
+            "name":        f"Surya Sankranti — Sun in {sun_name}",
             "signal":      "bull" if score > 0.08 else "bear" if score < -0.08 else "neutral",
             "score":       round(min(1.0, score), 3),
             "confidence":  60,
@@ -352,40 +372,10 @@ class MundaneEngine:
             "source":      "Mediniya Jyotish — Hora effects on commodities",
         }
 
-    # ── Default calculators ───────────────────────────────────────────────────
+    # ── Date-aware calculators ────────────────────────────────────────────────
 
-    def _current_sun_sign(self) -> int:
-        """Approximate Sun sign from calendar month."""
-        month = date.today().month
-        day   = date.today().day
-        # Sun enters each sign around the 14th–22nd of Gregorian month
-        # Approximate:
-        transitions = [
-            (4, 14, 1),  # Apr 14: Aries (Mesha Sankranti)
-            (5, 15, 2),  # May 15: Taurus
-            (6, 15, 3),  # Jun 15: Gemini
-            (7, 17, 4),  # Jul 17: Cancer
-            (8, 17, 5),  # Aug 17: Leo
-            (9, 17, 6),  # Sep 17: Virgo
-            (10,18, 7),  # Oct 18: Libra (Tula Sankranti)
-            (11,17, 8),  # Nov 17: Scorpio
-            (12,16, 9),  # Dec 16: Sagittarius
-            (1, 14, 10), # Jan 14: Capricorn (Makar Sankranti)
-            (2, 13, 11), # Feb 13: Aquarius
-            (3, 14, 12), # Mar 14: Pisces
-        ]
-        today = date.today()
-        sign = 12  # default Pisces
-        for m, d, s in transitions:
-            if today.month == m and today.day >= d:
-                sign = s
-            elif today.month == m and today.day < d:
-                sign = s - 1 if s > 1 else 12
-        return sign
-
-    def _current_ritu(self) -> str:
-        """Approximate Ritu from calendar month."""
-        month = date.today().month
+    def _ritu_for_date(self, d: date) -> str:
+        """Return Ritu (Indian season) for a given date based on month."""
         ritu_map = {
             1: "Shishira", 2: "Shishira",
             3: "Vasanta",  4: "Vasanta",
@@ -394,20 +384,17 @@ class MundaneEngine:
             9: "Sharad",   10: "Sharad",
             11: "Hemanta", 12: "Hemanta",
         }
-        return ritu_map.get(month, "Vasanta")
+        return ritu_map.get(d.month, "Vasanta")
 
-    def _current_samvatsara(self) -> int:
+    def _samvatsara_for_date(self, d: date) -> int:
         """
-        Calculate current Samvatsara index.
+        Calculate Samvatsara index for a given date.
         Samvatsara index = (Shaka year - 1) % 60
-        Shaka year = Gregorian year - 78 (approx, before Apr 14)
-                   = Gregorian year - 77 (after Apr 14)
+        Shaka year = Gregorian year - 78 (before Apr 14)
+                   = Gregorian year - 77 (on/after Apr 14)
         """
-        today   = date.today()
-        gy      = today.year
-        # Before Mesha Sankranti (Apr 14), still old Shaka year
-        mesha   = date(today.year, 4, 14)
-        shaka   = (gy - 78) if today < mesha else (gy - 77)
+        mesha = date(d.year, 4, 14)
+        shaka = (d.year - 78) if d < mesha else (d.year - 77)
         return (shaka - 1) % 60
 
     def _current_hora(self) -> str:

@@ -1,6 +1,6 @@
-// VyaparRatnaApp.swift
-// Drop this into a new Xcode iOS project (iOS 17+, SwiftUI)
-// Add NetworkManager.swift to the same target.
+// VedicAlphaApp.swift
+// VedicAlpha — Vedic astrology meets modern market analysis
+// iOS 17+, SwiftUI. Add NetworkManager.swift to the same target.
 
 import SwiftUI
 import Combine
@@ -10,7 +10,7 @@ import Charts
 // ── App Entry ─────────────────────────────────────────────────────────────────
 
 @main
-struct VyaparRatnaApp: App {
+struct VedicAlphaApp: App {
     var body: some Scene {
         WindowGroup { ContentView() }
     }
@@ -19,16 +19,28 @@ struct VyaparRatnaApp: App {
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
 extension Color {
-    static let bull    = Color(red: 0.11, green: 0.62, blue: 0.46)  // #1D9E75
-    static let bear    = Color(red: 0.89, green: 0.29, blue: 0.29)  // #E24B4A
-    static let neutral = Color(red: 0.53, green: 0.53, blue: 0.50)  // #888780
-    static let gold    = Color(red: 0.73, green: 0.46, blue: 0.09)  // #BA7517
+    // Signal semantics — green means BUY, red means SELL, nothing else
+    static let bull    = Color(red: 0.05, green: 0.65, blue: 0.40)  // #0DA666 — emerald
+    static let bear    = Color(red: 0.84, green: 0.18, blue: 0.18)  // #D72E2E — crimson
+    static let neutral = Color(red: 0.50, green: 0.52, blue: 0.54)  // #808588 — slate
+
+    // Brand identity — VedicAlpha saffron (never used for signals)
+    static let accent  = Color(red: 0.73, green: 0.36, blue: 0.04)  // #BA5C0A — deep saffron
+    static let gold    = Color(red: 0.70, green: 0.50, blue: 0.06)  // #B3800F — warm gold (astrological accents)
+
+    // Surface
     static let cardBG  = Color(.systemBackground)
     static let surface = Color(.secondarySystemBackground)
 }
 
 func signalColor(_ s: String) -> Color {
     s == "bull" ? .bull : s == "bear" ? .bear : .neutral
+}
+
+func expectedMoveColor(_ move: String) -> Color {
+    if move.hasPrefix("+") { return .bull }
+    if move.hasPrefix("-") { return .bear }
+    return .primary
 }
 
 // ── Main Tab View ─────────────────────────────────────────────────────────────
@@ -49,7 +61,7 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(2)
         }
-        .tint(.bull)
+        .tint(.accent)
         .task { await vm.checkServer() }
     }
 }
@@ -117,14 +129,25 @@ class AppViewModel: ObservableObject {
 
 struct PredictView: View {
     @ObservedObject var vm: AppViewModel
-    @State private var query    = ""
+    @State private var query         = ""
     @State private var selected: SearchResult?
-    @State private var horizon  = "1D"
-    @State private var mode     = "both"
+    @State private var horizon       = "1D"
+    @State private var mode          = "both"
     @FocusState private var focused: Bool
 
-    let horizons = ["1D","1W","2W","1M","3M"]
-    let modes    = [("both","Jyotish + Tech"),("jyotish","Jyotish"),("technical","Technical")]
+    // Saved after each run so Prashna + horizon re-fetch know the context
+    @State private var savedCategory = "equity"
+    @State private var savedMode     = "both"
+
+    // Prashna state (mirrors TickerDetailView)
+    @State private var showPrashna    = false
+    @State private var prashnaResp: PrashnaResponse?
+    @State private var prashnaLoading = false
+    @State private var detailLoading  = false
+
+    private let horizons      = ["1D","1W","2W","1M","3M"]
+    private let horizonLabels = ["1D":"1 Day","1W":"1 Week","2W":"2 Weeks","1M":"1 Month","3M":"3 Months"]
+    private let modes         = [("both","Jyotish + Tech"),("jyotish","Jyotish"),("technical","Technical")]
 
     var body: some View {
         NavigationStack {
@@ -146,7 +169,7 @@ struct PredictView: View {
 
                     VStack(alignment: .leading, spacing: 16) {
 
-                        // Search field
+                        // ── Search field ──────────────────────────────────────
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Stock or Commodity").sectionLabel()
                             HStack {
@@ -160,7 +183,7 @@ struct PredictView: View {
                                         Task { await vm.search(q) }
                                     }
                                 if !query.isEmpty {
-                                    Button { query = ""; selected = nil; vm.searchResults = [] } label: {
+                                    Button { query = ""; selected = nil; vm.searchResults = []; vm.response = nil } label: {
                                         Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                                     }
                                 }
@@ -169,7 +192,7 @@ struct PredictView: View {
                             .background(Color.surface)
                             .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                            // Search suggestions
+                            // Suggestions dropdown
                             if !vm.searchResults.isEmpty && selected == nil {
                                 VStack(spacing: 0) {
                                     ForEach(vm.searchResults) { r in
@@ -204,7 +227,7 @@ struct PredictView: View {
                             }
                         }
 
-                        // Horizon picker
+                        // ── Horizon picker ────────────────────────────────────
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Prediction Horizon").sectionLabel()
                             ScrollView(.horizontal, showsIndicators: false) {
@@ -214,7 +237,7 @@ struct PredictView: View {
                                             Text(horizonLabel(h))
                                                 .font(.subheadline)
                                                 .padding(.horizontal, 16).padding(.vertical, 8)
-                                                .background(horizon == h ? Color.bull : Color.surface)
+                                                .background(horizon == h ? Color.accent : Color.surface)
                                                 .foregroundStyle(horizon == h ? .white : Color.primary)
                                                 .clipShape(Capsule())
                                         }
@@ -223,7 +246,7 @@ struct PredictView: View {
                             }
                         }
 
-                        // Mode picker
+                        // ── Mode picker ───────────────────────────────────────
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Analysis Mode").sectionLabel()
                             HStack(spacing: 8) {
@@ -231,7 +254,7 @@ struct PredictView: View {
                                     Button { mode = m.0 } label: {
                                         Text(m.1).font(.caption)
                                             .padding(.horizontal, 12).padding(.vertical, 7)
-                                            .background(mode == m.0 ? Color.bull : Color.surface)
+                                            .background(mode == m.0 ? Color.accent : Color.surface)
                                             .foregroundStyle(mode == m.0 ? .white : Color.primary)
                                             .clipShape(Capsule())
                                     }
@@ -239,11 +262,14 @@ struct PredictView: View {
                             }
                         }
 
-                        // Predict button
+                        // ── Predict button ────────────────────────────────────
                         Button {
                             let ticker = selected?.ticker ?? query.uppercased()
                             let ex     = selected?.exchange ?? "NSE"
                             let cat    = selected?.category ?? "equity"
+                            savedCategory = cat
+                            savedMode     = mode
+                            prashnaResp   = nil   // clear stale Prashna on new run
                             Task { await vm.runPrediction(
                                 ticker: ticker, exchange: ex,
                                 category: cat, horizon: horizon, mode: mode
@@ -256,7 +282,7 @@ struct PredictView: View {
                             }
                             .frame(maxWidth: .infinity)
                             .padding(14)
-                            .background(Color.bull)
+                            .background(Color.accent)
                             .foregroundStyle(.white)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                         }
@@ -267,12 +293,90 @@ struct PredictView: View {
                             Text(err).font(.caption).foregroundStyle(.red)
                         }
 
-                        // Result
+                        // ── Full detail cards (same as TickerDetailView) ──────
                         if let r = vm.response {
-                            ResultCardView(response: r)
+                            let prediction = r.prediction
+
+                            // 1 — Verdict
+                            VerdictCard(
+                                prediction: prediction,
+                                prashna: prashnaResp?.prashna,
+                                ticker: r.ticker,
+                                horizon: r.horizon
+                            )
+
+                            // 2 — Price
+                            if let price = r.price {
+                                DetailPriceCard(
+                                    exchange: r.exchange,
+                                    signal: prediction.signal,
+                                    price: price
+                                )
+                            }
+
+                            // 3 — Prashna banner
+                            PrashnaBannerButton(
+                                isLoading: prashnaLoading,
+                                response: prashnaResp
+                            ) {
+                                showPrashna = true
+                            } onAsk: {
+                                Task { await fetchPrashna(r) }
+                            }
+
+                            // 4 — Detailed Analysis (collapsible)
+                            DisclosureGroup {
+                                VStack(spacing: 14) {
+                                    // Signal metrics + engine weights + horizon re-picker
+                                    DetailSignalCard(
+                                        prediction: prediction,
+                                        horizon: horizon,
+                                        horizons: horizons,
+                                        horizonLabels: horizonLabels,
+                                        isLoading: detailLoading
+                                    ) { h in
+                                        horizon = h
+                                        Task { await fetchDetail(r) }
+                                    }
+
+                                    // Projected chart
+                                    if !prediction.chartData.isEmpty {
+                                        DetailChartCard(
+                                            chartData: prediction.chartData,
+                                            signal: prediction.signal,
+                                            horizon: r.horizon
+                                        )
+                                    }
+
+                                    // All factors
+                                    DetailFactorsCard(prediction: prediction)
+                                }
+                            } label: {
+                                HStack {
+                                    Image(systemName: "chart.bar.doc.horizontal")
+                                        .foregroundStyle(.secondary)
+                                    Text("Detailed Analysis")
+                                        .font(.system(.subheadline, weight: .semibold))
+                                    Spacer()
+                                    if let fs = prediction.factorSummary {
+                                        Text("\(fs.bull)↑ \(fs.bear)↓")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                            .padding(14)
+                            .background(Color.cardBG)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(.separator), lineWidth: 0.5))
+
+                            Text(prediction.disclaimer)
+                                .font(.caption2).foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
                         }
 
-                        Text("For educational purposes only. Not SEBI-registered advice.")
+                        Text("VedicAlpha is for educational purposes only. Not SEBI-registered investment advice.")
                             .font(.caption2).foregroundStyle(.tertiary)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
@@ -280,100 +384,39 @@ struct PredictView: View {
                     .padding(16)
                 }
             }
-            .navigationTitle("Vyapar Ratna AI")
+            .navigationTitle("VedicAlpha")
             .navigationBarTitleDisplayMode(.large)
+            .sheet(isPresented: $showPrashna) {
+                if let resp = prashnaResp { PrashnaDetailSheet(response: resp) }
+            }
         }
     }
 
-    func horizonLabel(_ h: String) -> String {
+    // Re-fetch when user picks a different horizon inside the detail card
+    private func fetchDetail(_ r: PredictionResponse) async {
+        detailLoading = true
+        if let resp = try? await vm.net.predict(
+            ticker: r.ticker, exchange: r.exchange,
+            category: savedCategory, horizon: horizon, mode: savedMode
+        ) {
+            vm.response = resp
+        }
+        detailLoading = false
+    }
+
+    private func fetchPrashna(_ r: PredictionResponse) async {
+        prashnaLoading = true
+        if let resp = try? await vm.net.getPrashna(
+            ticker: r.ticker, exchange: r.exchange, category: savedCategory
+        ) {
+            prashnaResp = resp
+            showPrashna = true
+        }
+        prashnaLoading = false
+    }
+
+    private func horizonLabel(_ h: String) -> String {
         ["1D":"Next Day","1W":"1 Week","2W":"2 Weeks","1M":"1 Month","3M":"3 Months"][h] ?? h
-    }
-}
-
-// ── Result Card ───────────────────────────────────────────────────────────────
-
-struct ResultCardView: View {
-    let response: PredictionResponse
-    var pred: PredictionResult { response.prediction }
-
-    var body: some View {
-        VStack(spacing: 0) {
-
-            // Header
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(response.ticker).font(.system(.title2, weight: .semibold))
-                        Text(response.exchange).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("\(response.horizon) horizon · \(response.date)")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(pred.signalLabel)
-                    .font(.system(.subheadline, weight: .medium))
-                    .padding(.horizontal, 14).padding(.vertical, 6)
-                    .background(signalColor(pred.signal).opacity(0.12))
-                    .foregroundStyle(signalColor(pred.signal))
-                    .clipShape(Capsule())
-            }
-            .padding(16)
-
-            Divider()
-
-            // Metrics
-            HStack(spacing: 0) {
-                MetricCell(value: "\(pred.confidence)%", label: "Confidence",
-                           color: signalColor(pred.signal))
-                Divider()
-                MetricCell(value: pred.expectedMove, label: "Expected move", color: .primary)
-                Divider()
-                MetricCell(
-                    value: "\(response.panchanga.tithi.paksha.prefix(3).capitalized) \(response.panchanga.tithi.name.prefix(5))",
-                    label: "Tithi", color: .gold
-                )
-            }
-            .frame(height: 64)
-
-            Divider()
-
-            // Mini chart
-            if !pred.chartData.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Projected scenario (\(response.horizon))")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Chart(pred.chartData) { pt in
-                        BarMark(
-                            x: .value("Period", pt.label),
-                            y: .value("Index", pt.value - 100)
-                        )
-                        .foregroundStyle(signalColor(pred.signal))
-                        .cornerRadius(4)
-                    }
-                    .frame(height: 80)
-                    .chartYAxis(.hidden)
-                }
-                .padding(16)
-
-                Divider()
-            }
-
-            // Factors
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Analysis factors")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-
-                ForEach(pred.factors) { f in
-                    FactorRow(factor: f)
-                    if f.id != pred.factors.last?.id { Divider().padding(.leading, 40) }
-                }
-            }
-        }
-        .background(Color.cardBG)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(.separator), lineWidth: 0.5))
     }
 }
 
@@ -385,26 +428,6 @@ struct MetricCell: View {
             Text(label).font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-    }
-}
-
-struct FactorRow: View {
-    let factor: Factor
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Circle()
-                .fill(signalColor(factor.signal))
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(factor.name).font(.system(.subheadline, weight: .medium))
-                Text(factor.description).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(factor.source).font(.caption2).foregroundStyle(.tertiary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 16).padding(.vertical, 10)
     }
 }
 
@@ -543,12 +566,13 @@ struct SettingsView: View {
                     }
                 }
                 Section("About") {
+                    LabeledContent("App", value: "VedicAlpha")
                     LabeledContent("Version", value: "1.0.0")
-                    LabeledContent("Engine", value: "Vyapar Ratna AI")
+                    LabeledContent("Engines", value: "6 Vedic + Technical")
                     LabeledContent("Data sources", value: "NSE · MCX · NCDEX")
                 }
                 Section {
-                    Text("Predictions are based on traditional Jyotish (Vedic astrology) rules from Vyapar Ratna combined with technical indicators. This is for educational purposes only. Always consult a SEBI-registered financial advisor before making investment decisions.")
+                    Text("VedicAlpha combines signals from six classical Vedic texts (Vyapar Ratna, Prasna Marga, Bhavartha Ratnakara, Uttara Kalamrita, Brihat Samhita, Mediniya Jyotish) with modern technical indicators. For educational purposes only. Not SEBI-registered investment advice.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -761,7 +785,7 @@ struct TickerDetailView: View {
                 )
 
                 // 2 ── Price facts
-                DetailPriceCard(item: item, price: price)
+                DetailPriceCard(exchange: item.exchange, signal: item.prediction.signal, price: price)
 
                 // 3 ── Prashna quick-read banner
                 PrashnaBannerButton(isLoading: prashnaLoading, response: prashnaResp) {
@@ -784,9 +808,6 @@ struct TickerDetailView: View {
                             horizon = h
                             Task { await fetchDetail() }
                         }
-
-                        // Panchanga
-                        if let p = panchanga { DetailPanchaCard(panchanga: p) }
 
                         // Projected chart
                         if !prediction.chartData.isEmpty {
@@ -859,7 +880,8 @@ struct TickerDetailView: View {
 // ── Detail sub-cards ──────────────────────────────────────────────────────────
 
 struct DetailPriceCard: View {
-    let item: DashboardTickerItem
+    let exchange: String
+    let signal: String
     let price: PriceQuote
 
     var body: some View {
@@ -869,7 +891,7 @@ struct DetailPriceCard: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(fmtLarge(price.price))
                             .font(.system(.title, weight: .bold))
-                        Text(item.exchange)
+                        Text(exchange)
                             .font(.caption)
                             .padding(.horizontal, 8).padding(.vertical, 3)
                             .background(Color.surface)
@@ -886,10 +908,15 @@ struct DetailPriceCard: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     Circle()
-                        .fill(signalColor(item.prediction.signal))
+                        .fill(signalColor(signal))
                         .frame(width: 10, height: 10)
                     Text(sourceLabel(price.source))
                         .font(.caption2).foregroundStyle(.secondary)
+                    if isDelayed(price.source) {
+                        Text("~15 min delay")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
 
@@ -915,7 +942,12 @@ struct DetailPriceCard: View {
 
     private func fmtLarge(_ v: Double) -> String { v >= 1000 ? "₹\(String(format: "%.0f", v))" : "₹\(String(format: "%.2f", v))" }
     private func fmtSmall(_ v: Double) -> String { v >= 1000 ? "₹\(String(format: "%.0f", v))" : "₹\(String(format: "%.1f", v))" }
-    private func sourceLabel(_ s: String) -> String { s.contains("mock") ? "Mock" : "Live" }
+    private func sourceLabel(_ s: String) -> String {
+        if s.contains("mock") { return "Simulated" }
+        if s.contains("nsepython") { return "NSE Live" }
+        return "yfinance"
+    }
+    private func isDelayed(_ s: String) -> Bool { s.contains("yfinance") }
 }
 
 struct OHLCCell: View {
@@ -947,7 +979,8 @@ struct DetailSignalCard: View {
                 MetricCell(value: "\(prediction.confidence)%", label: "Confidence",
                            color: signalColor(prediction.signal))
                 Divider()
-                MetricCell(value: prediction.expectedMove, label: "Exp. Move", color: .primary)
+                MetricCell(value: prediction.expectedMove, label: "Exp. Move",
+                           color: expectedMoveColor(prediction.expectedMove))
             }
             .frame(height: 70)
 
@@ -987,7 +1020,7 @@ struct DetailSignalCard: View {
                                     Text(horizonLabels[h] ?? h).font(.caption2)
                                 }
                                 .padding(.horizontal, 14).padding(.vertical, 8)
-                                .background(horizon == h ? Color.bull : Color.surface)
+                                .background(horizon == h ? Color.accent : Color.surface)
                                 .foregroundStyle(horizon == h ? .white : Color.primary)
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                             }
@@ -1299,16 +1332,30 @@ struct EngineWeightsBar: View {
 
     private var segments: [Segment] {
         var segs: [Segment] = [
-            Segment(label: "Vyapar Ratna",    shortLabel: "VR",  value: weights.vyaparRatna, color: Color.gold),
-            Segment(label: "Bhavartha",        shortLabel: "BR",  value: weights.bhavartha,   color: Color.bull),
-            Segment(label: "Uttara Kalamrita", shortLabel: "UK",  value: weights.kalamrita,   color: Color(red: 0.58, green: 0.27, blue: 0.90)),
-            Segment(label: "Brihat Samhita",   shortLabel: "BS",  value: weights.brihat,      color: Color(red: 0.85, green: 0.45, blue: 0.10)),
-            Segment(label: "Mundane",          shortLabel: "MJ",  value: weights.mundane,     color: Color(red: 0.30, green: 0.65, blue: 0.55)),
-            Segment(label: "Technical",        shortLabel: "TA",  value: weights.technical,   color: Color(.systemBlue)),
+            // VR: brand saffron — the flagship engine
+            Segment(label: "Vyapar Ratna",    shortLabel: "VR",  value: weights.vyaparRatna,
+                    color: Color(red: 0.73, green: 0.36, blue: 0.04)),
+            // BR: emerald — mirrors the bull signal color (wealth yoga)
+            Segment(label: "Bhavartha",        shortLabel: "BR",  value: weights.bhavartha,
+                    color: Color(red: 0.05, green: 0.60, blue: 0.38)),
+            // UK: deep teal — Kalidasa's systematic approach
+            Segment(label: "Uttara Kalamrita", shortLabel: "UK",  value: weights.kalamrita,
+                    color: Color(red: 0.04, green: 0.52, blue: 0.56)),
+            // BS: rust — Varahamihira's slow planetary transits
+            Segment(label: "Brihat Samhita",   shortLabel: "BS",  value: weights.brihat,
+                    color: Color(red: 0.72, green: 0.25, blue: 0.06)),
+            // MJ: slate blue — seasonal and mundane cycles
+            Segment(label: "Mundane",          shortLabel: "MJ",  value: weights.mundane,
+                    color: Color(red: 0.24, green: 0.44, blue: 0.76)),
+            // TA: charcoal — technical/data-driven, intentionally muted
+            Segment(label: "Technical",        shortLabel: "TA",  value: weights.technical,
+                    color: Color(red: 0.32, green: 0.32, blue: 0.36)),
         ]
-        // Prasna only shown when non-zero (excluded in 1M+)
+        // Prasna only shown when non-zero (excluded at 1M, 3M horizons)
         if weights.prasna > 0 {
-            segs.insert(Segment(label: "Prasna Marga", shortLabel: "PM", value: weights.prasna, color: Color(red: 0.70, green: 0.20, blue: 0.50)), at: 1)
+            // PM: violet — horary/intuitive, distinct from all others
+            segs.insert(Segment(label: "Prasna Marga", shortLabel: "PM", value: weights.prasna,
+                                color: Color(red: 0.53, green: 0.22, blue: 0.78)), at: 1)
         }
         return segs
     }
@@ -1364,8 +1411,8 @@ struct PrashnaBannerButton: View {
         HStack(spacing: 12) {
             // Icon
             ZStack {
-                Circle().fill(Color.gold.opacity(0.15)).frame(width: 40, height: 40)
-                Image(systemName: "sparkles").font(.system(size: 18)).foregroundStyle(Color.gold)
+                Circle().fill(Color.accent.opacity(0.12)).frame(width: 40, height: 40)
+                Image(systemName: "sparkles").font(.system(size: 18)).foregroundStyle(Color.accent)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -1405,7 +1452,7 @@ struct PrashnaBannerButton: View {
                         .font(.system(.caption, weight: .semibold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 6)
-                        .background(Color.gold)
+                        .background(Color.accent)
                         .clipShape(Capsule())
                 }
             }
@@ -1413,7 +1460,7 @@ struct PrashnaBannerButton: View {
         .padding(14)
         .background(Color.cardBG)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.gold.opacity(0.3), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.accent.opacity(0.25), lineWidth: 1))
         .onTapGesture { if response != nil { onShowSheet() } }
     }
 
@@ -1462,9 +1509,9 @@ struct PrashnaDetailSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     .padding(14)
-                    .background(Color.gold.opacity(0.08))
+                    .background(Color.accent.opacity(0.07))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.gold.opacity(0.3), lineWidth: 1))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.accent.opacity(0.20), lineWidth: 1))
 
                     // Query details
                     VStack(alignment: .leading, spacing: 12) {
