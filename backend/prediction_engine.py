@@ -1503,21 +1503,40 @@ class PredictionEngine:
         return "bull" if score > 0 else "bear" if score < 0 else "neutral"
 
     def _build_chart_data(self, signal: str, horizon: str) -> list:
-        """Simulate a projected price path for display in iOS chart."""
-        labels_map = {
-            "1D": ["9am", "10am", "11am", "12pm", "1pm", "2pm", "3pm"],
-            "1W": ["Mon", "Tue", "Wed", "Thu", "Fri"],
-            "2W": ["W1 Mon", "W1 Wed", "W1 Fri", "W2 Mon", "W2 Wed", "W2 Fri"],
-            "1M": ["W1", "W2", "W3", "W4"],
-            "3M": ["M1", "M2", "M3"],
-        }
-        labels = labels_map.get(horizon, ["D1", "D2", "D3", "D4", "D5"])
+        """
+        Simulate a projected price path for display in iOS chart.
+        Granularity:
+          1D  → 7 hourly bars  (9am … 3pm)
+          1W  → 5 daily bars   (Mon … Fri)
+          2W  → 10 daily bars  (M1 … F2, one per trading day)
+          1M  → 22 daily bars  (D1 … D22, one per trading day)
+          3M  → 65 daily bars  (D1 … D65, one per trading day)
+        """
+        # Build label lists
+        if horizon == "1D":
+            labels = ["9am", "10am", "11am", "12pm", "1pm", "2pm", "3pm"]
+        elif horizon == "1W":
+            labels = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+        elif horizon == "2W":
+            days = ["M", "Tu", "W", "Th", "F"]
+            labels = [f"{d}·{w}" for w in ("1", "2") for d in days]
+        elif horizon == "1M":
+            labels = [f"D{i}" for i in range(1, 23)]   # 22 trading days
+        elif horizon == "3M":
+            labels = [f"D{i}" for i in range(1, 66)]   # 65 trading days
+        else:
+            labels = [f"D{i}" for i in range(1, 6)]
+
         direction = 1 if signal == "bull" else -1 if signal == "bear" else 0
+        # Scale per-step drift so longer horizons still show a meaningful trend
+        step_drift = {"1D": 0.40, "1W": 0.35, "2W": 0.22, "1M": 0.15, "3M": 0.10}
+        drift = step_drift.get(horizon, 0.30)
+
         base = 100.0
         points = []
         for i, lbl in enumerate(labels):
             noise = random.uniform(-0.5, 0.5)
-            base += direction * (0.4 + i * 0.15) + noise
+            base += direction * (drift + i * 0.02) + noise
             points.append({"label": lbl, "value": round(base, 2)})
         return points
 

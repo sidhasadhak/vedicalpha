@@ -1068,6 +1068,22 @@ struct DetailChartCard: View {
     let signal: String
     let horizon: String
 
+    /// Pick ~5 evenly-spaced labels to show on the x-axis so they never crowd.
+    /// 1D (7 pts) and 1W (5 pts) show every label; longer horizons sub-sample.
+    private var xAxisLabels: [String] {
+        guard !chartData.isEmpty else { return [] }
+        let stride: Int
+        switch horizon {
+        case "1D", "1W": stride = 1          // all 7 / all 5
+        case "2W":       stride = 2          // M·1, W·1, F·1, Tu·2, Th·2
+        case "1M":       stride = 4          // D1, D5, D9, D13, D17, D21
+        default:         stride = 13         // D1, D14, D27, D40, D53  (3M)
+        }
+        return chartData.enumerated()
+            .filter { $0.offset % stride == 0 }
+            .map    { $0.element.label }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Projected Scenario · \(horizon)")
@@ -1091,7 +1107,9 @@ struct DetailChartCard: View {
             .frame(height: 130)
             .chartYScale(domain: .automatic(includesZero: false))
             .chartXAxis {
-                AxisMarks { _ in AxisValueLabel().font(.caption2) }
+                AxisMarks(values: xAxisLabels) { _ in
+                    AxisValueLabel().font(.caption2)
+                }
             }
             .chartYAxis {
                 AxisMarks(position: .trailing, values: .automatic(desiredCount: 3)) { _ in
@@ -1768,10 +1786,10 @@ struct DevChatView: View {
                         }
                         .padding(.vertical, 12)
                     }
-                    .onChange(of: vm.streamingText) { _ in
+                    .onChange(of: vm.streamingText) { _, _ in
                         withAnimation { proxy.scrollTo("streaming", anchor: .bottom) }
                     }
-                    .onChange(of: vm.messages.count) { _ in
+                    .onChange(of: vm.messages.count) { _, _ in
                         if let last = vm.messages.last {
                             withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                         }
