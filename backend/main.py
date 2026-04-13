@@ -205,12 +205,12 @@ def get_dashboard():
         result     = predictor.predict(
             ticker    = inst["ticker"],
             category  = inst["category"],
-            horizon   = "1D",
+            horizon   = "1W",
             mode      = "both",
             panchanga = panchanga,
             price_data= price_data,
         )
-        history.save(inst["ticker"], "1D", result, today)
+        history.save(inst["ticker"], "1W", result, today)
         tickers.append({
             "ticker":   inst["ticker"],
             "exchange": inst["exchange"],

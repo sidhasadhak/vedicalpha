@@ -43,6 +43,20 @@ func expectedMoveColor(_ move: String) -> Color {
     return .primary
 }
 
+/// True when NSE is currently open (Mon–Fri 9:15–15:30 IST).
+/// Does not account for exchange holidays.
+func isNSEMarketOpen() -> Bool {
+    let ist = TimeZone(identifier: "Asia/Kolkata")!
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = ist
+    let now        = Date()
+    let components = cal.dateComponents([.weekday, .hour, .minute], from: now)
+    let weekday    = components.weekday ?? 1   // 1=Sun … 7=Sat
+    let mins       = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    guard weekday >= 2 && weekday <= 6 else { return false }   // Mon–Fri only
+    return mins >= 555 && mins < 930   // 9:15 AM–3:30 PM IST
+}
+
 // ── Main Tab View ─────────────────────────────────────────────────────────────
 
 struct ContentView: View {
@@ -131,7 +145,7 @@ struct PredictView: View {
     @ObservedObject var vm: AppViewModel
     @State private var query         = ""
     @State private var selected: SearchResult?
-    @State private var horizon       = "1D"
+    @State private var horizon       = "1W"
     @State private var mode          = "both"
     @FocusState private var focused: Bool
 
@@ -659,13 +673,24 @@ struct DashboardView: View {
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
+                    let open = isNSEMarketOpen()
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(open ? Color.blue : Color(.systemGray3))
+                            .frame(width: 7, height: 7)
+                        Text(open ? "Live" : "Closed")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(open ? Color.blue : Color.secondary)
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         Task { await vm.loadDashboard() }
                     } label: {
                         if vm.dashboardLoading {
                             ProgressView().controlSize(.small)
                         } else {
-                            Image(systemName: "arrow.clockwise")    
+                            Image(systemName: "arrow.clockwise")
                         }
                     }
                 }
@@ -758,7 +783,7 @@ struct TickerDetailView: View {
     @ObservedObject var vm: AppViewModel
     let item: DashboardTickerItem
 
-    @State private var horizon       = "1D"
+    @State private var horizon       = "1W"
     @State private var detailResp: PredictionResponse?
     @State private var isLoading     = false
     @State private var showPrashna   = false
@@ -910,12 +935,19 @@ struct DetailPriceCard: View {
                     Circle()
                         .fill(signalColor(signal))
                         .frame(width: 10, height: 10)
-                    Text(sourceLabel(price.source))
-                        .font(.caption2).foregroundStyle(.secondary)
+                    // Market open/close indicator
+                    let open = isNSEMarketOpen()
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(open ? Color.blue : Color(.systemGray3))
+                            .frame(width: 6, height: 6)
+                        Text(sourceLabel(price.source))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     if isDelayed(price.source) {
-                        Text("~15 min delay")
+                        Text(open ? "Live" : "~15 min delay")
                             .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(open ? Color.blue.opacity(0.8) : .tertiary)
                     }
                 }
             }
@@ -1339,78 +1371,54 @@ struct VerdictCard: View {
 struct EngineWeightsBar: View {
     let weights: EngineWeights
 
-    // Fixed display order and colors
-    private struct Segment: Identifiable {
-        let id = UUID()
-        let label: String
-        let shortLabel: String
-        let value: Int
-        let color: Color
+    /// Combined weight of all six Vedic/Astro engines.
+    private var vedicPct: Int {
+        weights.vyaparRatna + weights.prasna + weights.bhavartha +
+        weights.kalamrita + weights.brihat + weights.mundane
     }
+    private var techPct: Int { weights.technical }
 
-    private var segments: [Segment] {
-        var segs: [Segment] = [
-            // VR: brand saffron — the flagship engine
-            Segment(label: "Vyapar Ratna",    shortLabel: "VR",  value: weights.vyaparRatna,
-                    color: Color(red: 0.73, green: 0.36, blue: 0.04)),
-            // BR: emerald — mirrors the bull signal color (wealth yoga)
-            Segment(label: "Bhavartha",        shortLabel: "BR",  value: weights.bhavartha,
-                    color: Color(red: 0.05, green: 0.60, blue: 0.38)),
-            // UK: deep teal — Kalidasa's systematic approach
-            Segment(label: "Uttara Kalamrita", shortLabel: "UK",  value: weights.kalamrita,
-                    color: Color(red: 0.04, green: 0.52, blue: 0.56)),
-            // BS: rust — Varahamihira's slow planetary transits
-            Segment(label: "Brihat Samhita",   shortLabel: "BS",  value: weights.brihat,
-                    color: Color(red: 0.72, green: 0.25, blue: 0.06)),
-            // MJ: slate blue — seasonal and mundane cycles
-            Segment(label: "Mundane",          shortLabel: "MJ",  value: weights.mundane,
-                    color: Color(red: 0.24, green: 0.44, blue: 0.76)),
-            // TA: charcoal — technical/data-driven, intentionally muted
-            Segment(label: "Technical",        shortLabel: "TA",  value: weights.technical,
-                    color: Color(red: 0.32, green: 0.32, blue: 0.36)),
-        ]
-        // Prasna only shown when non-zero (excluded at 1M, 3M horizons)
-        if weights.prasna > 0 {
-            // PM: violet — horary/intuitive, distinct from all others
-            segs.insert(Segment(label: "Prasna Marga", shortLabel: "PM", value: weights.prasna,
-                                color: Color(red: 0.53, green: 0.22, blue: 0.78)), at: 1)
-        }
-        return segs
-    }
+    private let vedicColor = Color(red: 0.73, green: 0.36, blue: 0.04) // saffron
+    private let techColor  = Color(red: 0.32, green: 0.32, blue: 0.36) // charcoal
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Engine Weights").font(.caption).foregroundStyle(.secondary)
+                Text("Signal Weights").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Text(weights.category.capitalized + " · " + weights.horizon)
                     .font(.caption2).foregroundStyle(.tertiary)
             }
 
-            // Stacked bar
+            // Two-segment bar
             GeometryReader { geo in
                 HStack(spacing: 2) {
-                    ForEach(segments) { seg in
-                        if seg.value > 0 {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(seg.color)
-                                .frame(width: max(0, geo.size.width * Double(seg.value) / 100))
-                        }
+                    if vedicPct > 0 {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(vedicColor)
+                            .frame(width: max(0, geo.size.width * Double(vedicPct) / 100))
+                    }
+                    if techPct > 0 {
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(techColor)
+                            .frame(width: max(0, geo.size.width * Double(techPct) / 100))
                     }
                 }
             }
             .frame(height: 8)
             .clipShape(RoundedRectangle(cornerRadius: 4))
 
-            // Legend
-            HStack(spacing: 12) {
-                ForEach(segments) { seg in
-                    HStack(spacing: 4) {
-                        RoundedRectangle(cornerRadius: 2).fill(seg.color)
-                            .frame(width: 10, height: 10)
-                        Text("\(seg.shortLabel) \(seg.value)%")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
+            // Legend — two items only
+            HStack(spacing: 16) {
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2).fill(vedicColor).frame(width: 10, height: 10)
+                    Text("Vedic / Astro  \(vedicPct)%")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2).fill(techColor).frame(width: 10, height: 10)
+                    Text("Technical  \(techPct)%")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
