@@ -60,6 +60,9 @@ struct ContentView: View {
             SettingsView(vm: vm)
                 .tabItem { Label("Settings", systemImage: "gear") }
                 .tag(2)
+            DevChatView()
+                .tabItem { Label("Dev Chat", systemImage: "bubble.left.and.bubble.right") }
+                .tag(3)
         }
         .tint(.accent)
         .task { await vm.checkServer() }
@@ -1612,5 +1615,276 @@ struct PrashnaDetailSheet: View {
             return df.string(from: d)
         }
         return iso
+    }
+}
+
+// ── Dev Chat ──────────────────────────────────────────────────────────────────
+
+private func modelBadgeColor(_ model: String) -> Color {
+    let m = model.lowercased()
+    if m.contains("qwen") || m.contains("ollama") || m.contains("local") { return .bull }
+    if m.contains("claude")                                               { return .blue }
+    return .neutral
+}
+
+private func modelBadgeLabel(_ model: String) -> String {
+    let m = model.lowercased()
+    if m.contains("opus")   { return "Claude Opus" }
+    if m.contains("sonnet") { return "Claude Sonnet" }
+    if m.contains("qwen")   { return "Qwen3 Local" }
+    return model
+}
+
+// ── DevChatViewModel ──────────────────────────────────────────────────────────
+
+@MainActor
+class DevChatViewModel: ObservableObject {
+    @Published var messages:      [ChatMessage] = []
+    @Published var streamingText: String        = ""
+    @Published var streamingModel: String       = ""
+    @Published var isStreaming:   Bool          = false
+    @Published var stats:         ModelStats?   = nil
+
+    private let net = NetworkManager.shared
+
+    func send(_ text: String, forceModel: String) async {
+        // Append user message
+        messages.append(ChatMessage(
+            role: "user", text: text,
+            model: "", taskType: "", responseTime: 0
+        ))
+        isStreaming    = true
+        streamingText  = ""
+        streamingModel = ""
+        let t0 = Date()
+
+        var finalModel    = ""
+        var finalTaskType = ""
+
+        do {
+            for try await event in net.streamChat(message: text, forceModel: forceModel) {
+                switch event {
+                case .routing(let model, let taskType):
+                    finalModel     = model
+                    finalTaskType  = taskType
+                    streamingModel = modelBadgeLabel(model)
+                case .chunk(let chunk):
+                    streamingText += chunk
+                case .done(let model, let taskType, _, let elapsed):
+                    finalModel    = model
+                    finalTaskType = taskType
+                    messages.append(ChatMessage(
+                        role: "assistant",
+                        text: streamingText,
+                        model: modelBadgeLabel(finalModel),
+                        taskType: finalTaskType,
+                        responseTime: elapsed
+                    ))
+                    streamingText  = ""
+                    streamingModel = ""
+                }
+            }
+        } catch {
+            messages.append(ChatMessage(
+                role: "assistant",
+                text: "Error: \(error.localizedDescription)",
+                model: "Error", taskType: "", responseTime: Date().timeIntervalSince(t0)
+            ))
+            streamingText  = ""
+            streamingModel = ""
+        }
+        isStreaming = false
+    }
+
+    func loadStats() async {
+        stats = try? await net.getModelStats()
+    }
+}
+
+// ── DevChatView ───────────────────────────────────────────────────────────────
+
+struct DevChatView: View {
+    @StateObject private var vm         = DevChatViewModel()
+    @State private var inputText        = ""
+    @State private var forceModelIndex  = 0  // 0=Auto 1=Claude 2=Local
+    @FocusState private var inputFocused: Bool
+
+    private var forceModelKey: String {
+        ["auto", "claude", "ollama"][forceModelIndex]
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+
+                // ── Top status bar ────────────────────────────────────────────
+                if let last = vm.messages.last(where: { $0.role == "assistant" }) {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(modelBadgeColor(last.model))
+                            .frame(width: 7, height: 7)
+                        Text("Last: \(last.model) · \(String(format: "%.1f", last.responseTime))s")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        if let s = vm.stats {
+                            Text("Claude \(s.today.claudeCalls)  ·  Local \(s.today.ollamaCalls)")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 6)
+                    .background(Color.surface)
+                    Divider()
+                }
+
+                // ── Messages ──────────────────────────────────────────────────
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 14) {
+                            ForEach(vm.messages) { msg in
+                                DevChatBubble(message: msg)
+                                    .id(msg.id)
+                            }
+                            // Live streaming bubble
+                            if vm.isStreaming && !vm.streamingText.isEmpty {
+                                DevChatBubble(message: ChatMessage(
+                                    role: "assistant",
+                                    text: vm.streamingText,
+                                    model: vm.streamingModel,
+                                    taskType: "",
+                                    responseTime: 0
+                                ))
+                                .id("streaming")
+                            } else if vm.isStreaming {
+                                HStack(spacing: 8) {
+                                    ProgressView().scaleEffect(0.7)
+                                    Text(vm.streamingModel.isEmpty
+                                         ? "Routing…"
+                                         : "\(vm.streamingModel) thinking…")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                .padding(.leading, 16)
+                                .id("streaming")
+                            }
+                        }
+                        .padding(.vertical, 12)
+                    }
+                    .onChange(of: vm.streamingText) { _ in
+                        withAnimation { proxy.scrollTo("streaming", anchor: .bottom) }
+                    }
+                    .onChange(of: vm.messages.count) { _ in
+                        if let last = vm.messages.last {
+                            withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                        }
+                    }
+                }
+
+                Divider()
+
+                // ── Model override picker ─────────────────────────────────────
+                Picker("", selection: $forceModelIndex) {
+                    Text("Auto").tag(0)
+                    Text("Claude").tag(1)
+                    Text("Local").tag(2)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16).padding(.top, 10)
+
+                // ── Input bar ─────────────────────────────────────────────────
+                HStack(alignment: .bottom, spacing: 10) {
+                    TextField(
+                        "Ask about signals, rules, or request code…",
+                        text: $inputText,
+                        axis: .vertical
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...5)
+                    .focused($inputFocused)
+
+                    Button {
+                        let msg = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !msg.isEmpty, !vm.isStreaming else { return }
+                        inputText = ""
+                        Task { await vm.send(msg, forceModel: forceModelKey) }
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(
+                                inputText.trimmingCharacters(in: .whitespaces).isEmpty || vm.isStreaming
+                                ? Color.neutral : Color.accent
+                            )
+                    }
+                    .disabled(
+                        inputText.trimmingCharacters(in: .whitespaces).isEmpty || vm.isStreaming
+                    )
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+            .navigationTitle("Dev Chat")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Stats") {
+                        Task { await vm.loadStats() }
+                    }
+                    .font(.caption)
+                }
+            }
+            .task { await vm.loadStats() }
+        }
+    }
+}
+
+// ── DevChatBubble ─────────────────────────────────────────────────────────────
+
+struct DevChatBubble: View {
+    let message: ChatMessage
+
+    var isUser: Bool { message.role == "user" }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            if isUser { Spacer(minLength: 60) }
+
+            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
+
+                // Model badge row (assistant only)
+                if !isUser && !message.model.isEmpty {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(modelBadgeColor(message.model))
+                            .frame(width: 6, height: 6)
+                        Text(message.model)
+                            .font(.caption2)
+                            .foregroundStyle(modelBadgeColor(message.model))
+                        if message.responseTime > 0 {
+                            Text("· \(String(format: "%.1f", message.responseTime))s")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.leading, 4)
+                }
+
+                // Message bubble
+                Text(message.text)
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        isUser
+                        ? Color.accent.opacity(0.12)
+                        : Color(.secondarySystemBackground)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color(.separator).opacity(0.5), lineWidth: 0.5)
+                    )
+                    .textSelection(.enabled)
+            }
+
+            if !isUser { Spacer(minLength: 60) }
+        }
+        .padding(.horizontal, 14)
     }
 }

@@ -45,6 +45,15 @@ class HistoryStore:
                     payload   TEXT
                 )
             """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS model_calls (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model     TEXT NOT NULL,
+                    task_type TEXT,
+                    tokens    INTEGER DEFAULT 0,
+                    created   TEXT NOT NULL
+                )
+            """)
             con.commit()
 
     def save(self, ticker: str, horizon: str, result: dict, target: date):
@@ -105,3 +114,54 @@ class HistoryStore:
                 "SELECT ticker,condition,threshold,payload FROM alerts WHERE active=1"
             ).fetchall()
         return [json.loads(r[3]) for r in rows]
+
+    # ── Model-call tracking ────────────────────────────────────────────────────
+
+    def log_model_call(self, model: str, task_type: str, tokens: int = 0):
+        with self._conn() as con:
+            con.execute(
+                "INSERT INTO model_calls (model, task_type, tokens, created) VALUES (?,?,?,?)",
+                (model, task_type, tokens, datetime.now().isoformat()),
+            )
+            con.commit()
+
+    def get_model_stats(self) -> dict:
+        today = datetime.now().strftime("%Y-%m-%d")
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT model, task_type, tokens FROM model_calls WHERE created LIKE ?",
+                (f"{today}%",),
+            ).fetchall()
+
+        claude_calls = 0
+        ollama_calls = 0
+        claude_tokens = 0
+        routing_breakdown: dict = {}
+
+        for model, ttype, tokens in rows:
+            is_claude = "claude" in model.lower()
+            if is_claude:
+                claude_calls  += 1
+                claude_tokens += tokens or 0
+            else:
+                ollama_calls  += 1
+
+            key = ttype or "unknown"
+            if key not in routing_breakdown:
+                routing_breakdown[key] = {"count": 0, "model": model}
+            routing_breakdown[key]["count"] += 1
+
+        # Claude Sonnet pricing: ~$3 per 1M output tokens (as of Apr 2026)
+        estimated_cost = round(claude_tokens * 3.0 / 1_000_000, 4)
+
+        return {
+            "today": {
+                "claude_calls":       claude_calls,
+                "ollama_calls":       ollama_calls,
+                "claude_tokens_used": claude_tokens,
+                "estimated_cost_usd": estimated_cost,
+            },
+            "routing_breakdown": routing_breakdown,
+            "ollama_model":   "qwen3-coder:30b",
+            "ollama_status":  "running",
+        }

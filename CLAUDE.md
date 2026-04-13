@@ -481,6 +481,65 @@ to switch between environments.
 
 ---
 
+## Model Routing (claude_bridge + model_router)
+
+VedicAlpha uses **intelligent model routing** to minimise Claude API cost.
+Every Dev Chat message is classified and sent to the right model automatically.
+
+### Which model handles what
+
+| Task | Model | Why |
+|------|-------|-----|
+| Jyotish rule interpretation | Claude Sonnet/Opus | Needs domain judgment |
+| Prediction logic debugging | Claude Sonnet | Complex reasoning |
+| Backtesting analysis | Claude Sonnet | Insight + pattern matching |
+| Architecture decisions | Claude Opus | Deep reasoning |
+| Writing new `.py` / `.swift` files | Qwen3-Coder (Ollama) | Free, fast, capable |
+| Adding endpoints / boilerplate | Qwen3-Coder (Ollama) | Pure code generation |
+| Refactoring / renaming | Qwen3-Coder (Ollama) | Mechanical transformation |
+| Simple bug fixes | Qwen3-Coder (Ollama) | Syntax / type errors |
+
+### Routing keywords
+
+**Coding signals** (→ Qwen3): `write a`, `create a file`, `add a function`,
+`update the file`, `add endpoint`, `implement`, `refactor`, `add import`,
+`fix the syntax`, file path mentions (`.py`, `.swift`), code blocks (` ``` `).
+
+**Reasoning signals** (→ Claude): `why`, `explain`, `analyse`, `interpret`,
+`jyotish`, `astrolog`, `backtest result`, `should i`, `debug`,
+`something is wrong`, `what's the best approach`.
+
+**Opus escalation**: `deep analysis`, `compare all six books`,
+`interpret all rules from`, `architectural decision`, `fundamental problem`.
+
+### Forcing a model
+
+In the iOS Dev Chat, use the `[Auto] [Claude] [Local]` segmented control.
+
+Via API: add `"force_model": "claude"` or `"force_model": "ollama"` to the POST body.
+
+### Adding new routing rules
+
+Edit `CODING_SIGNALS` / `REASONING_SIGNALS` / `OPUS_SIGNALS` lists in
+`backend/model_router.py`. No restart needed — changes take effect on next call.
+
+### Model stats
+
+`GET /model_stats` returns today's call counts, token usage, and estimated cost.
+The iOS Dev Chat shows call counts in the top status bar.
+
+### Local model
+
+`qwen3-coder:30b` (18 GB) running via Ollama at `http://localhost:11434`.
+If Ollama goes down: `ollama serve &` then `ollama pull qwen3-coder:30b`.
+
+### Claude API key
+
+Set `ANTHROPIC_API_KEY` in `backend/.env`. Without it, Claude calls return
+a friendly error message and suggest setting the key — the app does not crash.
+
+---
+
 ## Constraints / Non-Negotiables
 
 1. No API keys committed to git — use `.env` (gitignored)

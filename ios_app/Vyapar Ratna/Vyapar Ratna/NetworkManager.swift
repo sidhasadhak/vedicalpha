@@ -246,6 +246,69 @@ struct HistoryItem: Codable, Identifiable {
     }
 }
 
+// ── Dev Chat models ───────────────────────────────────────────────────────────
+
+struct ChatMessage: Identifiable {
+    let id = UUID()
+    let role: String          // "user" | "assistant"
+    let text: String
+    let model: String         // "" for user messages
+    let taskType: String      // "coding" | "reasoning" | "mixed"
+    let responseTime: Double  // seconds; 0 for user or in-flight messages
+}
+
+struct ChatRequest: Encodable {
+    let message: String
+    let forceModel: String
+    enum CodingKeys: String, CodingKey {
+        case message
+        case forceModel = "force_model"
+    }
+}
+
+// SSE event envelope decoded from "data: {...}" lines
+struct ChatEventData: Decodable {
+    let type: String
+    let model: String?
+    let taskType: String?
+    let text: String?
+    let tokens: Int?
+    let elapsed: Double?
+    enum CodingKeys: String, CodingKey {
+        case type, model, text, tokens, elapsed
+        case taskType = "task_type"
+    }
+}
+
+enum ChatStreamEvent {
+    case routing(model: String, taskType: String)
+    case chunk(text: String)
+    case done(model: String, taskType: String, tokens: Int, elapsed: Double)
+}
+
+struct ModelStats: Codable {
+    struct Today: Codable {
+        let claudeCalls: Int
+        let ollamaCalls: Int
+        let claudeTokensUsed: Int
+        let estimatedCostUsd: Double
+        enum CodingKeys: String, CodingKey {
+            case claudeCalls      = "claude_calls"
+            case ollamaCalls      = "ollama_calls"
+            case claudeTokensUsed = "claude_tokens_used"
+            case estimatedCostUsd = "estimated_cost_usd"
+        }
+    }
+    let today: Today
+    let ollamaModel: String
+    let ollamaStatus: String
+    enum CodingKeys: String, CodingKey {
+        case today
+        case ollamaModel  = "ollama_model"
+        case ollamaStatus = "ollama_status"
+    }
+}
+
 // ── Network Manager ───────────────────────────────────────────────────────────
 
 enum NetworkError: Error, LocalizedError {
@@ -368,6 +431,85 @@ class NetworkManager: ObservableObject {
         )
         let (data, _) = try await URLSession.shared.data(for: request)
         return try decoder.decode(PrashnaResponse.self, from: data)
+    }
+
+    // MARK: — Dev Chat (SSE streaming)
+
+    func streamChat(
+        message: String,
+        forceModel: String = "auto"
+    ) -> AsyncThrowingStream<ChatStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                guard let url = URL(string: "\(BASE_URL)/chat") else {
+                    continuation.finish(throwing: NetworkError.badURL(BASE_URL))
+                    return
+                }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/json",    forHTTPHeaderField: "Content-Type")
+                request.setValue("text/event-stream",   forHTTPHeaderField: "Accept")
+                request.httpBody = try? JSONEncoder().encode(
+                    ChatRequest(message: message, forceModel: forceModel)
+                )
+
+                do {
+                    let (stream, _) = try await URLSession.shared.bytes(for: request)
+                    var lineBuffer = ""
+                    let dec = JSONDecoder()
+
+                    for try await byte in stream {
+                        let ch = String(bytes: [byte], encoding: .utf8) ?? ""
+                        lineBuffer += ch
+
+                        while let nlRange = lineBuffer.range(of: "\n") {
+                            let line = String(lineBuffer[lineBuffer.startIndex..<nlRange.lowerBound])
+                            lineBuffer = String(lineBuffer[nlRange.upperBound...])
+
+                            guard line.hasPrefix("data: ") else { continue }
+                            let jsonStr = String(line.dropFirst(6))
+                            guard let data = jsonStr.data(using: .utf8),
+                                  let ev   = try? dec.decode(ChatEventData.self, from: data)
+                            else { continue }
+
+                            switch ev.type {
+                            case "routing":
+                                continuation.yield(.routing(
+                                    model:    ev.model    ?? "",
+                                    taskType: ev.taskType ?? ""
+                                ))
+                            case "chunk":
+                                continuation.yield(.chunk(text: ev.text ?? ""))
+                            case "done":
+                                continuation.yield(.done(
+                                    model:    ev.model    ?? "",
+                                    taskType: ev.taskType ?? "",
+                                    tokens:   ev.tokens   ?? 0,
+                                    elapsed:  ev.elapsed  ?? 0
+                                ))
+                                continuation.finish()
+                                return
+                            default:
+                                break
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    // MARK: — Model Stats
+
+    func getModelStats() async throws -> ModelStats {
+        guard let url = URL(string: "\(BASE_URL)/model_stats") else {
+            throw NetworkError.badURL(BASE_URL)
+        }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        return try decoder.decode(ModelStats.self, from: data)
     }
 
     // MARK: — Health check

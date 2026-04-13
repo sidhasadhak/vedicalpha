@@ -17,6 +17,7 @@ from prediction_engine import PredictionEngine
 from market_data import MarketDataFetcher
 from history_store import HistoryStore
 from kalamrita_engine import KalamritaEngine
+from claude_bridge import router as chat_router
 
 app = FastAPI(
     title="VedicAlpha API",
@@ -38,6 +39,9 @@ predictor = PredictionEngine(jyotish)
 market    = MarketDataFetcher()
 history   = HistoryStore()
 kalamrita = KalamritaEngine()
+
+# Model routing — /chat (SSE) + /model_stats
+app.include_router(chat_router)
 
 # Default tickers shown on the iOS dashboard, in display order
 DASHBOARD_TICKERS = [
@@ -322,6 +326,15 @@ def check_alerts():
         if a["condition"] == result["signal"]:
             triggered.append({"alert": a, "prediction": result})
     return {"triggered": triggered}
+
+
+@app.get("/model_stats")
+def get_model_stats():
+    """
+    Usage and cost breakdown for today's model calls.
+    Claude tokens used, Ollama calls, routing breakdown.
+    """
+    return history.get_model_stats()
 
 
 if __name__ == "__main__":

@@ -14,3 +14,7 @@ yfinance==0.2.40      # Commodities + global indices — reliable fallback
 
 # Astronomical calculations — Swiss Ephemeris (Lahiri sidereal, used by all Vedic engines)
 pyswisseph==2.10.3.2   # Covers 3000 BC–3000 AD; no data files needed (Moshier built-in)
+
+# Model routing — async HTTP for Ollama + Claude API
+httpx==0.27.0          # async HTTP client for Ollama streaming
+anthropic>=0.40.0      # Claude API (set ANTHROPIC_API_KEY in .env)
